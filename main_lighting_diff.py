@@ -32,7 +32,8 @@ class LightingDifferenceApp:
         # シワ検出器
         self.detector = LightingDifferenceWrinkleDetector(
             threshold=LIGHTING_DETECTION_PARAMS['difference_threshold'],
-            min_length=LIGHTING_DETECTION_PARAMS['min_wrinkle_length']
+            min_length=LIGHTING_DETECTION_PARAMS['min_wrinkle_length'],
+            sobel_threshold=LIGHTING_DETECTION_PARAMS['sobel_threshold']
         )
 
         # 撮影画像
@@ -47,6 +48,12 @@ class LightingDifferenceApp:
 
         # 状態フラグ
         self.is_running = False
+        self.detection_done = False  # 検出が完了しているか
+
+        # パラメータ変数
+        self.param_threshold = tk.IntVar(value=LIGHTING_DETECTION_PARAMS['difference_threshold'])
+        self.param_min_length = tk.IntVar(value=LIGHTING_DETECTION_PARAMS['min_wrinkle_length'])
+        self.param_sobel_threshold = tk.IntVar(value=LIGHTING_DETECTION_PARAMS['sobel_threshold'])
 
         # ディレクトリの初期化
         self._ensure_directories()
@@ -129,9 +136,9 @@ class LightingDifferenceApp:
         # 検出方法選択
         self.detection_method_var = tk.StringVar(value="advanced")
         ttk.Radiobutton(detection_frame, text="基本検出", variable=self.detection_method_var,
-                       value="basic").grid(row=0, column=0, sticky=tk.W)
+                       value="basic", command=self.on_method_change).grid(row=0, column=0, sticky=tk.W)
         ttk.Radiobutton(detection_frame, text="高度な検出（横シワ強調）", variable=self.detection_method_var,
-                       value="advanced").grid(row=0, column=1, sticky=tk.W)
+                       value="advanced", command=self.on_method_change).grid(row=0, column=1, sticky=tk.W)
 
         # シワ検出実行ボタン
         self.detect_button = ttk.Button(detection_frame, text="シワ検出実行",
@@ -147,6 +154,59 @@ class LightingDifferenceApp:
         self.result_label = ttk.Label(detection_frame, text="", font=('Arial', 10),
                                      foreground="black")
         self.result_label.grid(row=3, column=0, columnspan=2, pady=10)
+
+        # パラメータ調整フレーム（メインフレームの下段）
+        param_frame = ttk.LabelFrame(main_frame, text="パラメータ調整（リアルタイム反映）", padding="10")
+        param_frame.grid(row=2, column=0, columnspan=2, padx=5, pady=5, sticky=(tk.W, tk.E))
+
+        # 差分閾値スライダー
+        ttk.Label(param_frame, text="差分閾値:").grid(row=0, column=0, sticky=tk.W, pady=5)
+        self.threshold_scale = ttk.Scale(param_frame, from_=5, to=100, variable=self.param_threshold,
+                                         orient=tk.HORIZONTAL, length=200,
+                                         command=self.on_param_change)
+        self.threshold_scale.grid(row=0, column=1, padx=5, pady=5)
+        self.threshold_label = ttk.Label(param_frame, text=f"{self.param_threshold.get()}")
+        self.threshold_label.grid(row=0, column=2, pady=5)
+        ttk.Label(param_frame, text="大きいほど強いシワのみ検出", font=('Arial', 8), foreground="gray").grid(
+            row=0, column=3, sticky=tk.W, padx=10)
+
+        # 最小シワ長さスライダー
+        ttk.Label(param_frame, text="最小シワ長さ:").grid(row=1, column=0, sticky=tk.W, pady=5)
+        self.min_length_scale = ttk.Scale(param_frame, from_=5, to=50, variable=self.param_min_length,
+                                          orient=tk.HORIZONTAL, length=200,
+                                          command=self.on_param_change)
+        self.min_length_scale.grid(row=1, column=1, padx=5, pady=5)
+        self.min_length_label = ttk.Label(param_frame, text=f"{self.param_min_length.get()}px")
+        self.min_length_label.grid(row=1, column=2, pady=5)
+        ttk.Label(param_frame, text="大きいほど短いシワを無視", font=('Arial', 8), foreground="gray").grid(
+            row=1, column=3, sticky=tk.W, padx=10)
+
+        # Sobel閾値スライダー
+        ttk.Label(param_frame, text="Sobel閾値:").grid(row=2, column=0, sticky=tk.W, pady=5)
+        self.sobel_scale = ttk.Scale(param_frame, from_=5, to=50, variable=self.param_sobel_threshold,
+                                     orient=tk.HORIZONTAL, length=200,
+                                     command=self.on_param_change)
+        self.sobel_scale.grid(row=2, column=1, padx=5, pady=5)
+        self.sobel_label = ttk.Label(param_frame, text=f"{self.param_sobel_threshold.get()}")
+        self.sobel_label.grid(row=2, column=2, pady=5)
+        ttk.Label(param_frame, text="横エッジ検出の感度", font=('Arial', 8), foreground="gray").grid(
+            row=2, column=3, sticky=tk.W, padx=10)
+
+        # 処理解説フレーム
+        explain_frame = ttk.LabelFrame(main_frame, text="処理の解説", padding="10")
+        explain_frame.grid(row=3, column=0, columnspan=2, padx=5, pady=5, sticky=(tk.W, tk.E))
+
+        # スクロール可能なテキストエリア
+        text_scroll = ttk.Scrollbar(explain_frame)
+        text_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.explain_text = tk.Text(explain_frame, height=8, width=100, wrap=tk.WORD,
+                                   yscrollcommand=text_scroll.set, font=('Arial', 9))
+        self.explain_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        text_scroll.config(command=self.explain_text.yview)
+
+        # 初期説明文を表示
+        self.update_explanation()
 
     def scan_cameras(self):
         """カメラをスキャン"""
@@ -262,11 +322,87 @@ class LightingDifferenceApp:
         if self.img_coaxial is not None and self.img_top is not None:
             self.detect_button.config(state=tk.NORMAL)
 
+    def on_param_change(self, value):
+        """パラメータ変更時のコールバック"""
+        # ラベルを更新
+        self.threshold_label.config(text=f"{self.param_threshold.get()}")
+        self.min_length_label.config(text=f"{self.param_min_length.get()}px")
+        self.sobel_label.config(text=f"{self.param_sobel_threshold.get()}")
+
+        # 検出が既に完了している場合は自動的に再計算
+        if self.detection_done:
+            self.detect_wrinkles()
+
+    def on_method_change(self):
+        """検出方法変更時のコールバック"""
+        # 検出が既に完了している場合は自動的に再計算
+        if self.detection_done:
+            self.detect_wrinkles()
+
+    def update_explanation(self):
+        """処理解説を更新"""
+        explanation = """【照明差分法によるシワ検出の仕組み】
+
+■ 基本原理
+・同軸照明：カメラと同じ方向から照明 → シワの影が少ない（明るい）
+・上方照明：上から照明 → シワに影ができる（暗い）
+・差分：2枚の画像の差 = シワの影だけが残る
+
+■ 処理ステップ
+
+1. グレースケール変換
+   → 色情報を削除し、明るさ（0-255）だけを扱う
+
+2. 差分計算
+   → 同軸照明画像 - 上方照明画像
+   → シワの部分で差分が大きくなる
+
+3. 閾値処理（差分閾値）
+   → 現在の値: {threshold}
+   → 差分がこの値以上の部分を「シワ候補」として抽出
+   → 大きいほど強いシワのみ検出
+
+4. モルフォロジー処理（ノイズ除去）
+   → 横長カーネルで横方向に連続するものを保持
+   → 孤立したノイズを除去
+
+【高度な検出の場合】
+
+5. Sobelフィルタ（横エッジ検出）
+   → 現在の値: {sobel}
+   → 縦方向の明るさ変化を検出 = 横シワ
+   → 大きいほど強いエッジのみ検出
+
+6. 横方向連続性チェック
+   → 現在の値: {min_length}px
+   → 横幅がこの長さ以上連続しているものだけを残す
+   → 短い孤立したノイズを除外
+
+7. 最終判定
+   → 輪郭検出でシワの数・面積・長さを計算
+   → NG判定：シワ数が{ng_count}本以上 または シワ率が{ng_ratio}%以上
+""".format(
+            threshold=self.param_threshold.get(),
+            sobel=self.param_sobel_threshold.get(),
+            min_length=self.param_min_length.get(),
+            ng_count=LIGHTING_DETECTION_PARAMS['ng_wrinkle_count'],
+            ng_ratio=LIGHTING_DETECTION_PARAMS['ng_wrinkle_ratio']
+        )
+
+        self.explain_text.delete(1.0, tk.END)
+        self.explain_text.insert(1.0, explanation)
+
     def detect_wrinkles(self):
         """シワ検出を実行"""
         if self.img_coaxial is None or self.img_top is None:
-            messagebox.showerror("エラー", "両方の画像を撮影してください")
+            if not self.detection_done:  # 初回のみエラー表示
+                messagebox.showerror("エラー", "両方の画像を撮影してください")
             return
+
+        # 現在のパラメータで検出器を更新
+        self.detector.threshold = self.param_threshold.get()
+        self.detector.min_length = self.param_min_length.get()
+        self.detector.sobel_threshold = self.param_sobel_threshold.get()
 
         method = self.detection_method_var.get()
 
@@ -288,6 +424,12 @@ class LightingDifferenceApp:
 
             # 結果詳細表示ボタンを有効化
             self.show_result_button.config(state=tk.NORMAL)
+
+            # 検出完了フラグを設定
+            self.detection_done = True
+
+            # 説明文を更新
+            self.update_explanation()
 
         except Exception as e:
             messagebox.showerror("エラー", f"シワ検出に失敗しました: {e}")

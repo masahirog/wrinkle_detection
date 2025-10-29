@@ -20,16 +20,18 @@ class LightingDifferenceWrinkleDetector:
     同軸照明と上方照明の差分から、横シワの影を検出します
     """
 
-    def __init__(self, threshold=20, min_length=20):
+    def __init__(self, threshold=20, min_length=20, sobel_threshold=10):
         """
         初期化
 
         Args:
             threshold: 差分の閾値
             min_length: 検出する最小シワ長さ（ピクセル）
+            sobel_threshold: Sobelフィルタの閾値
         """
         self.threshold = threshold
         self.min_length = min_length
+        self.sobel_threshold = sobel_threshold
 
         # 画像位置合わせ用（照明変化に強い）
         try:
@@ -157,7 +159,7 @@ class LightingDifferenceWrinkleDetector:
         debug_images['6_sobel_vertical'] = sobel_y_norm
 
         # 閾値処理
-        _, sobel_binary = cv2.threshold(sobel_y_norm, 10, 255, cv2.THRESH_BINARY)
+        _, sobel_binary = cv2.threshold(sobel_y_norm, self.sobel_threshold, 255, cv2.THRESH_BINARY)
         debug_images['7_sobel_threshold'] = sobel_binary
 
         # 横方向に連続性があるものを抽出
