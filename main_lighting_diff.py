@@ -26,6 +26,13 @@ class LightingDifferenceApp:
         self.root = root
         self.root.title(GUI_SETTINGS_LIGHTING['window_title'])
 
+        # ウィンドウサイズを設定（デバッグ画像エリアを含むため大きめに）
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        window_width = min(1400, int(screen_width * 0.9))
+        window_height = min(1000, int(screen_height * 0.9))
+        self.root.geometry(f"{window_width}x{window_height}")
+
         # カメラコントロール
         self.camera = StCameraControl()
 
@@ -84,6 +91,13 @@ class LightingDifferenceApp:
         # メインフレーム
         main_frame = ttk.Frame(self.root, padding="10")
         main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+
+        # ウィンドウのグリッド設定（リサイズ可能に）
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(0, weight=1)
+        main_frame.columnconfigure(0, weight=1)
+        main_frame.columnconfigure(1, weight=1)
+        main_frame.rowconfigure(3, weight=1)  # デバッグ画像エリアを拡張可能に
 
         # 左側: プレビューエリア
         preview_frame = ttk.LabelFrame(main_frame, text="カメラプレビュー", padding="10")
@@ -151,15 +165,10 @@ class LightingDifferenceApp:
                                         command=self.detect_wrinkles, state=tk.DISABLED)
         self.detect_button.grid(row=1, column=0, columnspan=2, padx=5, pady=10, sticky=(tk.W, tk.E))
 
-        # 結果表示ボタン
-        self.show_result_button = ttk.Button(detection_frame, text="結果詳細表示",
-                                            command=self.show_result_window, state=tk.DISABLED)
-        self.show_result_button.grid(row=2, column=0, columnspan=2, padx=5, pady=5, sticky=(tk.W, tk.E))
-
         # 検出結果表示
         self.result_label = ttk.Label(detection_frame, text="", font=('Arial', 10),
                                      foreground="black")
-        self.result_label.grid(row=3, column=0, columnspan=2, pady=10)
+        self.result_label.grid(row=2, column=0, columnspan=2, pady=10)
 
         # パラメータ調整フレーム（メインフレームの下段）
         param_frame = ttk.LabelFrame(main_frame, text="パラメータ調整（リアルタイム反映）", padding="10")
@@ -198,9 +207,36 @@ class LightingDifferenceApp:
         ttk.Label(param_frame, text="横線検出の感度（上方照明）", font=('Arial', 8), foreground="gray").grid(
             row=2, column=3, sticky=tk.W, padx=10)
 
+        # デバッグ画像表示エリア
+        debug_frame = ttk.LabelFrame(main_frame, text="処理過程（クリックで拡大）", padding="10")
+        debug_frame.grid(row=3, column=0, columnspan=2, padx=5, pady=5, sticky=(tk.W, tk.E, tk.N, tk.S))
+
+        # スクロール可能なキャンバス
+        debug_canvas = tk.Canvas(debug_frame, bg='white', height=300)
+        debug_v_scroll = ttk.Scrollbar(debug_frame, orient=tk.VERTICAL, command=debug_canvas.yview)
+        debug_h_scroll = ttk.Scrollbar(debug_frame, orient=tk.HORIZONTAL, command=debug_canvas.xview)
+
+        debug_canvas.configure(yscrollcommand=debug_v_scroll.set, xscrollcommand=debug_h_scroll.set)
+
+        debug_v_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        debug_h_scroll.pack(side=tk.BOTTOM, fill=tk.X)
+        debug_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # スクロール可能なフレーム
+        self.debug_scrollable_frame = ttk.Frame(debug_canvas)
+        debug_canvas.create_window((0, 0), window=self.debug_scrollable_frame, anchor=tk.NW)
+
+        # スクロール範囲を更新する関数
+        def update_debug_scroll():
+            self.debug_scrollable_frame.update_idletasks()
+            debug_canvas.config(scrollregion=debug_canvas.bbox(tk.ALL))
+
+        self.debug_scrollable_frame.bind("<Configure>", lambda e: update_debug_scroll())
+        self.update_debug_scroll = update_debug_scroll
+
         # 処理解説フレーム
         explain_frame = ttk.LabelFrame(main_frame, text="処理の解説", padding="10")
-        explain_frame.grid(row=3, column=0, columnspan=2, padx=5, pady=5, sticky=(tk.W, tk.E))
+        explain_frame.grid(row=4, column=0, columnspan=2, padx=5, pady=5, sticky=(tk.W, tk.E))
 
         # スクロール可能なテキストエリア
         text_scroll = ttk.Scrollbar(explain_frame)
@@ -438,8 +474,8 @@ class LightingDifferenceApp:
             # 結果を表示
             self.display_result()
 
-            # 結果詳細表示ボタンを有効化
-            self.show_result_button.config(state=tk.NORMAL)
+            # デバッグ画像を表示
+            self.display_debug_images()
 
             # 検出完了フラグを設定
             self.detection_done = True
@@ -469,34 +505,21 @@ class LightingDifferenceApp:
 
         self.result_label.config(text=result_info, foreground=result_color)
 
-    def show_result_window(self):
-        """結果詳細ウィンドウを表示"""
+    def display_debug_images(self):
+        """デバッグ画像をメイン画面に表示"""
         if self.debug_images is None:
-            messagebox.showwarning("警告", "検出結果がありません")
             return
 
-        # 新しいウィンドウを作成
-        result_window = tk.Toplevel(self.root)
-        result_window.title("シワ検出結果 - 詳細")
-        result_window.geometry("900x700")
+        # 既存のデバッグ画像をクリア
+        for widget in self.debug_scrollable_frame.winfo_children():
+            widget.destroy()
 
-        # スクロール可能なキャンバス
-        canvas = tk.Canvas(result_window, bg='white')
-        v_scrollbar = ttk.Scrollbar(result_window, orient=tk.VERTICAL, command=canvas.yview)
-        canvas.configure(yscrollcommand=v_scrollbar.set)
-
-        v_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        scrollable_frame = ttk.Frame(canvas)
-        canvas.create_window((0, 0), window=scrollable_frame, anchor=tk.NW)
-
-        # デバッグ画像を表示
+        # デバッグ画像を3列で表示
         for idx, (key, img) in enumerate(self.debug_images.items()):
-            row = idx // 2
-            col = idx % 2
+            row = idx // 3
+            col = idx % 3
 
-            frame = ttk.LabelFrame(scrollable_frame, text=key, padding="5")
+            frame = ttk.LabelFrame(self.debug_scrollable_frame, text=key, padding="5")
             frame.grid(row=row, column=col, padx=5, pady=5)
 
             # グレースケールの場合はカラーに変換
@@ -505,25 +528,85 @@ class LightingDifferenceApp:
             else:
                 img_display = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-            # リサイズ
-            display_width = 400
+            # サムネイル表示用にリサイズ
+            display_width = 250
             display_height = int(img_display.shape[0] * display_width / img_display.shape[1])
             img_resized = cv2.resize(img_display, (display_width, display_height))
 
             pil_image = Image.fromarray(img_resized)
             photo = ImageTk.PhotoImage(image=pil_image)
 
-            label = ttk.Label(frame, image=photo)
+            # ラベルに表示（クリック可能）
+            label = ttk.Label(frame, image=photo, cursor="hand2")
             label.image = photo
             label.pack()
 
-        # 閉じるボタン
-        ttk.Button(scrollable_frame, text="閉じる", command=result_window.destroy).grid(
-            row=(len(self.debug_images) + 1) // 2, column=0, columnspan=2, pady=10
-        )
+            # クリックで拡大表示
+            original_img = img_display.copy()
+            label.bind("<Button-1>", lambda e, img=original_img, t=key: self.show_enlarged_image(img, t))
 
-        scrollable_frame.update_idletasks()
+        # スクロール範囲を更新
+        self.update_debug_scroll()
+
+    def show_enlarged_image(self, image, title):
+        """
+        画像を拡大表示
+
+        Args:
+            image: 表示する画像（RGB形式）
+            title: ウィンドウタイトル
+        """
+        # 新しいウィンドウを作成
+        enlarge_window = tk.Toplevel(self.root)
+        enlarge_window.title(f"拡大表示 - {title}")
+
+        # モーダル風に設定
+        enlarge_window.transient(self.root)
+        enlarge_window.grab_set()
+
+        # 最前面に表示
+        enlarge_window.lift()
+        enlarge_window.attributes('-topmost', True)
+        enlarge_window.after(100, lambda: enlarge_window.attributes('-topmost', False))
+
+        # スクロールバー付きキャンバス
+        canvas = tk.Canvas(enlarge_window, bg='gray')
+        v_scrollbar = ttk.Scrollbar(enlarge_window, orient=tk.VERTICAL, command=canvas.yview)
+        h_scrollbar = ttk.Scrollbar(enlarge_window, orient=tk.HORIZONTAL, command=canvas.xview)
+
+        canvas.configure(yscrollcommand=v_scrollbar.set, xscrollcommand=h_scrollbar.set)
+
+        v_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        h_scrollbar.pack(side=tk.BOTTOM, fill=tk.X)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # 画像を表示
+        pil_image = Image.fromarray(image)
+        photo = ImageTk.PhotoImage(image=pil_image)
+
+        canvas.create_image(0, 0, anchor=tk.NW, image=photo)
+        canvas.image = photo
+
+        # スクロール範囲を設定
         canvas.config(scrollregion=canvas.bbox(tk.ALL))
+
+        # ウィンドウサイズを設定（画像サイズに合わせるが、画面の80%まで）
+        screen_width = enlarge_window.winfo_screenwidth()
+        screen_height = enlarge_window.winfo_screenheight()
+
+        window_width = min(image.shape[1] + 20, int(screen_width * 0.8))
+        window_height = min(image.shape[0] + 20, int(screen_height * 0.8))
+
+        enlarge_window.geometry(f"{window_width}x{window_height}")
+
+        # 中央に配置
+        enlarge_window.update_idletasks()
+        x = (screen_width - window_width) // 2
+        y = (screen_height - window_height) // 2
+        enlarge_window.geometry(f"+{x}+{y}")
+
+        # ESCキーで閉じる
+        enlarge_window.bind('<Escape>', lambda e: enlarge_window.destroy())
 
     def on_closing(self):
         """ウィンドウを閉じる時の処理"""
