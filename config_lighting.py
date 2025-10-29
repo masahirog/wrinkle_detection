@@ -20,7 +20,7 @@ CAMERA_SETTINGS = {
 
 # 照明差分法のパラメータ
 LIGHTING_DETECTION_PARAMS = {
-    # 差分閾値
+    # 差分閾値（シワと柄を区別する閾値）
     'difference_threshold': 20,  # 差分の閾値（0-255）
 
     # 横シワの最小長さ
@@ -35,7 +35,7 @@ LIGHTING_DETECTION_PARAMS = {
     # 高度な検出を使用するか（Sobel + 横シワ強調）
     'use_advanced_detection': True,
 
-    # Sobelフィルタの閾値
+    # Sobelフィルタの閾値（上方照明画像での横線検出）
     'sobel_threshold': 10,
 
     # NG判定閾値

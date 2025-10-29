@@ -120,9 +120,9 @@ class LightingDifferenceWrinkleDetector:
         初期化
 
         Args:
-            threshold: 差分の閾値
+            threshold: 差分の閾値（シワと柄を区別する閾値）
             min_length: 検出する最小シワ長さ（ピクセル）
-            sobel_threshold: Sobelフィルタの閾値
+            sobel_threshold: Sobelフィルタの閾値（横線検出の感度）
         """
         self.threshold = threshold
         self.min_length = min_length
@@ -158,7 +158,11 @@ class LightingDifferenceWrinkleDetector:
 
     def detect_wrinkles(self, img_coaxial, img_top):
         """
-        基本的なシワ検出
+        基本的なシワ検出（新アプローチ）
+
+        1. 上方照明画像で線状の暗い部分を抽出
+        2. その線の位置で同軸照明との差分を計算
+        3. 差分が大きい → シワ、差分が小さい → 柄
 
         Args:
             img_coaxial: 同軸照明画像
@@ -186,37 +190,46 @@ class LightingDifferenceWrinkleDetector:
         debug_images['4_coaxial_gray'] = gray_coax
         debug_images['5_top_gray'] = gray_top
 
-        # 差分計算（影の部分が強調される）
+        # ステップ1: 上方照明画像で線状の暗い部分（シワ候補）を抽出
+        # 2値化（暗い部分を抽出）
+        _, dark_areas = cv2.threshold(gray_top, 127, 255, cv2.THRESH_BINARY_INV)
+        debug_images['6_top_dark_areas'] = dark_areas
+
+        # エッジ検出（横方向の線を強調）
+        edges = cv2.Canny(gray_top, 50, 150)
+        debug_images['7_top_edges'] = edges
+
+        # 横長カーネルで横方向の線を強調
+        kernel_h = cv2.getStructuringElement(cv2.MORPH_RECT, (self.min_length, 1))
+        horizontal_lines = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel_h)
+        debug_images['8_horizontal_lines'] = horizontal_lines
+
+        # ステップ2: 各線の位置で同軸照明との差分を計算
         diff = cv2.absdiff(gray_coax, gray_top)
-        debug_images['6_difference'] = diff
+        debug_images['9_difference'] = diff
 
-        # より詳細な差分解析
-        # 同軸照明の方が明るい部分（反射）
-        reflection = np.where(gray_coax > gray_top, gray_coax - gray_top, 0).astype(np.uint8)
-        # 上方照明の方が明るい部分（通常は少ない）
-        shadow = np.where(gray_top > gray_coax, gray_top - gray_coax, 0).astype(np.uint8)
+        # ステップ3: 差分が大きい部分のみを残す（シワと柄を区別）
+        # 線の位置で差分が閾値以上 → シワ
+        _, diff_binary = cv2.threshold(diff, self.threshold, 255, cv2.THRESH_BINARY)
+        debug_images['10_diff_threshold'] = diff_binary
 
-        debug_images['7_reflection'] = reflection
-        debug_images['8_shadow'] = shadow
-
-        # シワは主に差分として現れる
-        _, wrinkle_mask = cv2.threshold(diff, self.threshold, 255, cv2.THRESH_BINARY)
-        debug_images['9_threshold'] = wrinkle_mask
-
-        # ノイズ除去（横長のカーネルで横シワを強調）
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 1))  # 横長
-        wrinkle_mask = cv2.morphologyEx(wrinkle_mask, cv2.MORPH_CLOSE, kernel)
-        debug_images['10_morphology'] = wrinkle_mask
+        # 線と差分の両方が検出された部分のみをシワとする
+        wrinkle_mask = cv2.bitwise_and(horizontal_lines, diff_binary)
+        debug_images['11_wrinkle_candidates'] = wrinkle_mask
 
         # ボトルマスクを適用（ボトル領域外を除外）
         wrinkle_mask = cv2.bitwise_and(wrinkle_mask, bottle_mask)
-        debug_images['11_masked_wrinkles'] = wrinkle_mask
+        debug_images['12_masked_wrinkles'] = wrinkle_mask
 
         return wrinkle_mask, diff, debug_images
 
     def detect_with_horizontal_emphasis(self, img_coaxial, img_top):
         """
-        横シワを強調した高度な検出
+        横シワを強調した高度な検出（新アプローチ）
+
+        1. 上方照明画像で線状の暗い部分を抽出（Sobel + 横線強調）
+        2. その線の位置で同軸照明との差分を計算
+        3. 差分が大きい → シワ、差分が小さい → 柄
 
         Args:
             img_coaxial: 同軸照明画像
@@ -224,7 +237,7 @@ class LightingDifferenceWrinkleDetector:
 
         Returns:
             horizontal_features: 横シワ特徴画像
-            diff_normalized: 正規化済み差分画像
+            diff_normalized: 差分画像
             debug_images: デバッグ用画像の辞書
         """
         debug_images = {}
@@ -237,55 +250,50 @@ class LightingDifferenceWrinkleDetector:
         bottle_mask, bottle_seg_image = detect_bottle_segmentation(img_coaxial)
         debug_images['3_bottle_segmentation'] = bottle_seg_image
 
-        # 位置合わせ
-        coax_aligned, top_aligned = self.align_images(img_coaxial, img_top)
-
         # グレースケール変換
-        gray_coax = cv2.cvtColor(coax_aligned, cv2.COLOR_BGR2GRAY)
-        gray_top = cv2.cvtColor(top_aligned, cv2.COLOR_BGR2GRAY)
+        gray_coax = cv2.cvtColor(img_coaxial, cv2.COLOR_BGR2GRAY)
+        gray_top = cv2.cvtColor(img_top, cv2.COLOR_BGR2GRAY)
 
-        # 正規化（照明の総量を合わせる）
-        coax_norm = cv2.normalize(gray_coax, None, 0, 255, cv2.NORM_MINMAX)
-        top_norm = cv2.normalize(gray_top, None, 0, 255, cv2.NORM_MINMAX)
+        debug_images['4_coaxial_gray'] = gray_coax
+        debug_images['5_top_gray'] = gray_top
 
-        debug_images['4_coaxial_normalized'] = coax_norm
-        debug_images['5_top_normalized'] = top_norm
-
-        # 差分計算（符号付き）
-        diff = coax_norm.astype(float) - top_norm.astype(float)
-        diff_normalized = cv2.normalize(diff, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-
-        debug_images['6_difference'] = diff_normalized
-
-        # 横シワの特徴を強調
-        # Sobelフィルタ（縦方向）で横エッジを検出
-        sobel_y = cv2.Sobel(diff, cv2.CV_64F, 0, 1, ksize=3)
-        sobel_y_abs = np.abs(sobel_y)
+        # ステップ1: 上方照明画像でSobelフィルタ（横エッジ抽出）
+        sobel_y_top = cv2.Sobel(gray_top, cv2.CV_64F, 0, 1, ksize=3)
+        sobel_y_abs = np.abs(sobel_y_top)
         sobel_y_norm = cv2.normalize(sobel_y_abs, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+        debug_images['6_top_sobel'] = sobel_y_norm
 
-        debug_images['7_sobel_vertical'] = sobel_y_norm
-
-        # 閾値処理
+        # Sobel結果を閾値処理
         _, sobel_binary = cv2.threshold(sobel_y_norm, self.sobel_threshold, 255, cv2.THRESH_BINARY)
-        debug_images['8_sobel_threshold'] = sobel_binary
+        debug_images['7_sobel_threshold'] = sobel_binary
 
-        # 横方向に連続性があるものを抽出
+        # 横方向に連続性があるものを抽出（横線のみ）
         kernel_h = np.ones((1, self.min_length), np.uint8)
-        horizontal_features = cv2.morphologyEx(sobel_binary, cv2.MORPH_CLOSE, kernel_h)
+        horizontal_lines = cv2.morphologyEx(sobel_binary, cv2.MORPH_CLOSE, kernel_h)
+        debug_images['8_horizontal_lines'] = horizontal_lines
 
-        debug_images['9_horizontal_features'] = horizontal_features
+        # ステップ2: 差分計算
+        diff = cv2.absdiff(gray_coax, gray_top)
+        debug_images['9_difference'] = diff
+
+        # ステップ3: 差分が大きい部分のみを残す（シワと柄を区別）
+        _, diff_binary = cv2.threshold(diff, self.threshold, 255, cv2.THRESH_BINARY)
+        debug_images['10_diff_threshold'] = diff_binary
+
+        # 横線と差分の両方が検出された部分のみをシワとする
+        wrinkle_mask = cv2.bitwise_and(horizontal_lines, diff_binary)
+        debug_images['11_wrinkle_candidates'] = wrinkle_mask
 
         # さらにノイズ除去
         kernel_clean = np.ones((3, 3), np.uint8)
-        horizontal_features = cv2.morphologyEx(horizontal_features, cv2.MORPH_OPEN, kernel_clean)
-
-        debug_images['10_cleaned_wrinkles'] = horizontal_features
+        wrinkle_mask = cv2.morphologyEx(wrinkle_mask, cv2.MORPH_OPEN, kernel_clean)
+        debug_images['12_cleaned_wrinkles'] = wrinkle_mask
 
         # ボトルマスクを適用（ボトル領域外を除外）
-        horizontal_features = cv2.bitwise_and(horizontal_features, bottle_mask)
-        debug_images['11_masked_wrinkles'] = horizontal_features
+        wrinkle_mask = cv2.bitwise_and(wrinkle_mask, bottle_mask)
+        debug_images['13_masked_wrinkles'] = wrinkle_mask
 
-        return horizontal_features, diff_normalized, debug_images
+        return wrinkle_mask, diff, debug_images
 
     def analyze_wrinkles(self, wrinkle_mask):
         """
