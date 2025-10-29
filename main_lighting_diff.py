@@ -12,11 +12,9 @@ import time
 import os
 
 from camera_control import StCameraControl
-from lighting_control import LightingControl
 from wrinkle_detector_lighting import LightingDifferenceWrinkleDetector
 from config_lighting import (CAMERA_SETTINGS, LIGHTING_DETECTION_PARAMS,
-                             GUI_SETTINGS_LIGHTING, SAVE_SETTINGS_LIGHTING,
-                             LIGHTING_CONTROL_SETTINGS)
+                             GUI_SETTINGS_LIGHTING, SAVE_SETTINGS_LIGHTING)
 from utils import resize_for_display, ensure_directories
 
 
@@ -30,9 +28,6 @@ class LightingDifferenceApp:
 
         # カメラコントロール
         self.camera = StCameraControl()
-
-        # 照明コントロール
-        self.lighting = LightingControl(use_gpio=LIGHTING_CONTROL_SETTINGS['use_gpio'])
 
         # シワ検出器
         self.detector = LightingDifferenceWrinkleDetector(
@@ -110,19 +105,9 @@ class LightingDifferenceApp:
         self.stop_button = ttk.Button(control_frame, text="カメラ停止", command=self.stop_camera, state=tk.DISABLED)
         self.stop_button.grid(row=1, column=2, columnspan=2, padx=5, pady=5, sticky=(tk.W, tk.E))
 
-        # 照明制御
-        lighting_frame = ttk.LabelFrame(control_frame, text="照明制御", padding="5")
-        lighting_frame.grid(row=2, column=0, columnspan=4, pady=10, sticky=(tk.W, tk.E))
-
-        ttk.Button(lighting_frame, text="同軸照明 ON", command=lambda: self.lighting.set_coaxial_light(True)).grid(row=0, column=0, padx=5, pady=5)
-        ttk.Button(lighting_frame, text="同軸照明 OFF", command=lambda: self.lighting.set_coaxial_light(False)).grid(row=0, column=1, padx=5, pady=5)
-        ttk.Button(lighting_frame, text="上方照明 ON", command=lambda: self.lighting.set_top_light(True)).grid(row=1, column=0, padx=5, pady=5)
-        ttk.Button(lighting_frame, text="上方照明 OFF", command=lambda: self.lighting.set_top_light(False)).grid(row=1, column=1, padx=5, pady=5)
-        ttk.Button(lighting_frame, text="全OFF", command=self.lighting.all_off).grid(row=2, column=0, columnspan=2, padx=5, pady=5, sticky=(tk.W, tk.E))
-
         # 撮影制御
         capture_frame = ttk.LabelFrame(control_frame, text="撮影制御", padding="5")
-        capture_frame.grid(row=3, column=0, columnspan=4, pady=10, sticky=(tk.W, tk.E))
+        capture_frame.grid(row=2, column=0, columnspan=4, pady=10, sticky=(tk.W, tk.E))
 
         self.capture_coaxial_btn = ttk.Button(capture_frame, text="同軸照明で撮影",
                                               command=self.capture_coaxial, state=tk.DISABLED)
@@ -132,14 +117,10 @@ class LightingDifferenceApp:
                                           command=self.capture_top, state=tk.DISABLED)
         self.capture_top_btn.grid(row=0, column=1, padx=5, pady=5, sticky=(tk.W, tk.E))
 
-        self.capture_sequence_btn = ttk.Button(capture_frame, text="自動シーケンス撮影",
-                                               command=self.capture_sequence, state=tk.DISABLED)
-        self.capture_sequence_btn.grid(row=1, column=0, columnspan=2, padx=5, pady=5, sticky=(tk.W, tk.E))
-
         # 撮影状況表示
         self.capture_status_label = ttk.Label(capture_frame, text="同軸: 未撮影 | 上方: 未撮影",
                                              font=('Arial', 9))
-        self.capture_status_label.grid(row=2, column=0, columnspan=2, pady=5)
+        self.capture_status_label.grid(row=1, column=0, columnspan=2, pady=5)
 
         # 右下: シワ検出
         detection_frame = ttk.LabelFrame(main_frame, text="シワ検出", padding="10")
@@ -205,7 +186,6 @@ class LightingDifferenceApp:
             self.stop_button.config(state=tk.NORMAL)
             self.capture_coaxial_btn.config(state=tk.NORMAL)
             self.capture_top_btn.config(state=tk.NORMAL)
-            self.capture_sequence_btn.config(state=tk.NORMAL)
 
             # プレビュー更新を開始
             self.update_preview()
@@ -218,15 +198,11 @@ class LightingDifferenceApp:
         time.sleep(0.1)
         self.camera.close()
 
-        # 照明をOFF
-        self.lighting.all_off()
-
         # ボタン状態変更
         self.start_button.config(state=tk.NORMAL)
         self.stop_button.config(state=tk.DISABLED)
         self.capture_coaxial_btn.config(state=tk.DISABLED)
         self.capture_top_btn.config(state=tk.DISABLED)
-        self.capture_sequence_btn.config(state=tk.DISABLED)
 
     def update_preview(self):
         """プレビューを更新"""
@@ -259,10 +235,6 @@ class LightingDifferenceApp:
 
     def capture_coaxial(self):
         """同軸照明で撮影"""
-        self.lighting.set_coaxial_light(True)
-        self.lighting.set_top_light(False)
-        time.sleep(LIGHTING_DETECTION_PARAMS['stabilization_time'])
-
         self.img_coaxial = self.camera.capture_frame()
 
         if self.img_coaxial is not None:
@@ -272,31 +244,12 @@ class LightingDifferenceApp:
 
     def capture_top(self):
         """上方照明で撮影"""
-        self.lighting.set_coaxial_light(False)
-        self.lighting.set_top_light(True)
-        time.sleep(LIGHTING_DETECTION_PARAMS['stabilization_time'])
-
         self.img_top = self.camera.capture_frame()
 
         if self.img_top is not None:
             self.update_capture_status()
             self.check_detection_ready()
             messagebox.showinfo("撮影完了", "上方照明で撮影しました")
-
-    def capture_sequence(self):
-        """自動シーケンス撮影"""
-        images = self.lighting.capture_sequence(
-            self.camera,
-            LIGHTING_DETECTION_PARAMS['stabilization_time']
-        )
-
-        self.img_coaxial = images['coaxial']
-        self.img_top = images['top']
-
-        if self.img_coaxial is not None and self.img_top is not None:
-            self.update_capture_status()
-            self.check_detection_ready()
-            messagebox.showinfo("撮影完了", "自動シーケンス撮影が完了しました")
 
     def update_capture_status(self):
         """撮影状況を更新"""
@@ -421,7 +374,6 @@ class LightingDifferenceApp:
             time.sleep(0.1)
             self.camera.close()
 
-        self.lighting.cleanup()
         self.root.destroy()
 
 
