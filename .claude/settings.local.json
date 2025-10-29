@@ -3,7 +3,8 @@
     "allow": [
       "Bash(dir:*)",
       "Bash(pip install:*)",
-      "Bash(del lighting_test_ui.py lighting_difference_detector.py)"
+      "Bash(del lighting_test_ui.py lighting_difference_detector.py)",
+      "Bash(git checkout:*)"
     ],
     "deny": [],
     "ask": []
