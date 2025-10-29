@@ -26,12 +26,8 @@ class LightingDifferenceApp:
         self.root = root
         self.root.title(GUI_SETTINGS_LIGHTING['window_title'])
 
-        # ウィンドウサイズを設定（デバッグ画像エリアを含むため大きめに）
-        screen_width = self.root.winfo_screenwidth()
-        screen_height = self.root.winfo_screenheight()
-        window_width = min(1400, int(screen_width * 0.9))
-        window_height = min(1000, int(screen_height * 0.9))
-        self.root.geometry(f"{window_width}x{window_height}")
+        # ウィンドウサイズを設定
+        self.root.geometry("900x700")
 
         # カメラコントロール
         self.camera = StCameraControl()
@@ -52,6 +48,9 @@ class LightingDifferenceApp:
         self.diff_image = None
         self.debug_images = None
         self.stats = None
+
+        # デバッグウィンドウ
+        self.debug_window = None
 
         # 状態フラグ
         self.is_running = False
@@ -97,11 +96,10 @@ class LightingDifferenceApp:
         self.root.rowconfigure(0, weight=1)
         main_frame.columnconfigure(0, weight=1)
         main_frame.columnconfigure(1, weight=1)
-        main_frame.rowconfigure(3, weight=1)  # デバッグ画像エリアを拡張可能に
 
-        # 左側: プレビューエリア
+        # 左側: プレビューエリア（rowspanを1に変更）
         preview_frame = ttk.LabelFrame(main_frame, text="カメラプレビュー", padding="10")
-        preview_frame.grid(row=0, column=0, rowspan=2, padx=5, pady=5, sticky=(tk.N, tk.S))
+        preview_frame.grid(row=0, column=0, padx=5, pady=5, sticky=(tk.N, tk.W))
 
         self.preview_label = ttk.Label(preview_frame)
         self.preview_label.pack()
@@ -170,7 +168,7 @@ class LightingDifferenceApp:
                                      foreground="black")
         self.result_label.grid(row=2, column=0, columnspan=2, pady=10)
 
-        # パラメータ調整フレーム（メインフレームの下段）
+        # パラメータ調整フレーム
         param_frame = ttk.LabelFrame(main_frame, text="パラメータ調整（リアルタイム反映）", padding="10")
         param_frame.grid(row=2, column=0, columnspan=2, padx=5, pady=5, sticky=(tk.W, tk.E))
 
@@ -207,36 +205,9 @@ class LightingDifferenceApp:
         ttk.Label(param_frame, text="横線検出の感度（上方照明）", font=('Arial', 8), foreground="gray").grid(
             row=2, column=3, sticky=tk.W, padx=10)
 
-        # デバッグ画像表示エリア
-        debug_frame = ttk.LabelFrame(main_frame, text="処理過程（クリックで拡大）", padding="10")
-        debug_frame.grid(row=3, column=0, columnspan=2, padx=5, pady=5, sticky=(tk.W, tk.E, tk.N, tk.S))
-
-        # スクロール可能なキャンバス
-        debug_canvas = tk.Canvas(debug_frame, bg='white', height=300)
-        debug_v_scroll = ttk.Scrollbar(debug_frame, orient=tk.VERTICAL, command=debug_canvas.yview)
-        debug_h_scroll = ttk.Scrollbar(debug_frame, orient=tk.HORIZONTAL, command=debug_canvas.xview)
-
-        debug_canvas.configure(yscrollcommand=debug_v_scroll.set, xscrollcommand=debug_h_scroll.set)
-
-        debug_v_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        debug_h_scroll.pack(side=tk.BOTTOM, fill=tk.X)
-        debug_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        # スクロール可能なフレーム
-        self.debug_scrollable_frame = ttk.Frame(debug_canvas)
-        debug_canvas.create_window((0, 0), window=self.debug_scrollable_frame, anchor=tk.NW)
-
-        # スクロール範囲を更新する関数
-        def update_debug_scroll():
-            self.debug_scrollable_frame.update_idletasks()
-            debug_canvas.config(scrollregion=debug_canvas.bbox(tk.ALL))
-
-        self.debug_scrollable_frame.bind("<Configure>", lambda e: update_debug_scroll())
-        self.update_debug_scroll = update_debug_scroll
-
         # 処理解説フレーム
         explain_frame = ttk.LabelFrame(main_frame, text="処理の解説", padding="10")
-        explain_frame.grid(row=4, column=0, columnspan=2, padx=5, pady=5, sticky=(tk.W, tk.E))
+        explain_frame.grid(row=3, column=0, columnspan=2, padx=5, pady=5, sticky=(tk.W, tk.E))
 
         # スクロール可能なテキストエリア
         text_scroll = ttk.Scrollbar(explain_frame)
@@ -342,7 +313,6 @@ class LightingDifferenceApp:
         if self.img_coaxial is not None:
             self.update_capture_status()
             self.check_detection_ready()
-            messagebox.showinfo("撮影完了", "同軸照明で撮影しました")
 
     def capture_top(self):
         """上方照明で撮影"""
@@ -351,7 +321,6 @@ class LightingDifferenceApp:
         if self.img_top is not None:
             self.update_capture_status()
             self.check_detection_ready()
-            messagebox.showinfo("撮影完了", "上方照明で撮影しました")
 
     def update_capture_status(self):
         """撮影状況を更新"""
@@ -506,13 +475,41 @@ class LightingDifferenceApp:
         self.result_label.config(text=result_info, foreground=result_color)
 
     def display_debug_images(self):
-        """デバッグ画像をメイン画面に表示"""
+        """デバッグ画像を別ウィンドウで表示"""
         if self.debug_images is None:
             return
 
-        # 既存のデバッグ画像をクリア
-        for widget in self.debug_scrollable_frame.winfo_children():
-            widget.destroy()
+        # 既存のウィンドウがあれば更新
+        if self.debug_window and self.debug_window.winfo_exists():
+            # フレーム内のウィジェットをクリア
+            for widget in self.debug_scrollable_frame.winfo_children():
+                widget.destroy()
+        else:
+            # 新しいウィンドウを作成
+            self.debug_window = tk.Toplevel(self.root)
+            self.debug_window.title("処理過程（クリックで拡大）")
+            self.debug_window.geometry("900x700")
+
+            # スクロールバー付きキャンバスを作成
+            canvas = tk.Canvas(self.debug_window, bg='white')
+            v_scrollbar = ttk.Scrollbar(self.debug_window, orient=tk.VERTICAL, command=canvas.yview)
+            h_scrollbar = ttk.Scrollbar(self.debug_window, orient=tk.HORIZONTAL, command=canvas.xview)
+
+            canvas.configure(yscrollcommand=v_scrollbar.set, xscrollcommand=h_scrollbar.set)
+
+            v_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+            h_scrollbar.pack(side=tk.BOTTOM, fill=tk.X)
+            canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+            # スクロール可能なフレームを作成
+            self.debug_scrollable_frame = ttk.Frame(canvas)
+            canvas.create_window((0, 0), window=self.debug_scrollable_frame, anchor=tk.NW)
+
+            # キャンバスの参照を保持
+            self.debug_canvas = canvas
+
+            # 閉じても破棄せずに非表示にする
+            self.debug_window.protocol("WM_DELETE_WINDOW", self.debug_window.withdraw)
 
         # デバッグ画像を3列で表示
         for idx, (key, img) in enumerate(self.debug_images.items()):
@@ -538,7 +535,7 @@ class LightingDifferenceApp:
 
             # ラベルに表示（クリック可能）
             label = ttk.Label(frame, image=photo, cursor="hand2")
-            label.image = photo
+            label.image = photo  # 参照を保持
             label.pack()
 
             # クリックで拡大表示
@@ -546,7 +543,11 @@ class LightingDifferenceApp:
             label.bind("<Button-1>", lambda e, img=original_img, t=key: self.show_enlarged_image(img, t))
 
         # スクロール範囲を更新
-        self.update_debug_scroll()
+        self.debug_scrollable_frame.update_idletasks()
+        self.debug_canvas.config(scrollregion=self.debug_canvas.bbox(tk.ALL))
+
+        # ウィンドウを表示
+        self.debug_window.deiconify()
 
     def show_enlarged_image(self, image, title):
         """
