@@ -12,6 +12,101 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# YOLOセグメンテーションモデルのグローバル変数（初回のみロード）
+_yolo_seg_model = None
+
+
+def get_yolo_seg_model():
+    """
+    YOLOセグメンテーションモデルを取得（シングルトンパターン）
+
+    Returns:
+        YOLOセグメンテーションモデル
+    """
+    global _yolo_seg_model
+    if _yolo_seg_model is None:
+        try:
+            from ultralytics import YOLO
+            logger.info("YOLOセグメンテーションモデルをロード中...")
+            _yolo_seg_model = YOLO('yolov8n-seg.pt')  # セグメンテーションモデル
+            logger.info("YOLOセグメンテーションモデルのロード完了")
+        except Exception as e:
+            logger.error(f"YOLOセグメンテーションモデルのロードに失敗: {e}")
+            _yolo_seg_model = None
+    return _yolo_seg_model
+
+
+def detect_bottle_segmentation(image):
+    """
+    YOLOセグメンテーションでボトルを検出し、マスクを取得
+
+    Args:
+        image: 入力画像
+
+    Returns:
+        bottle_mask: ボトルのマスク画像（白=ボトル、黒=背景）
+        annotated_image: セグメンテーション結果を描画した画像
+    """
+    model = get_yolo_seg_model()
+
+    if model is None:
+        # モデルがない場合は全体を対象にする
+        h, w = image.shape[:2]
+        return np.ones((h, w), dtype=np.uint8) * 255, image.copy()
+
+    try:
+        # YOLO推論（verbose=Falseでログを抑制）
+        results = model(image, verbose=False)
+
+        h, w = image.shape[:2]
+        bottle_mask = np.zeros((h, w), dtype=np.uint8)
+        annotated_image = image.copy()
+
+        # 検出結果を処理
+        for result in results:
+            if result.masks is None:
+                continue
+
+            boxes = result.boxes
+            masks = result.masks
+
+            for i, box in enumerate(boxes):
+                # クラスID取得（39 = bottle）
+                cls = int(box.cls[0])
+                if cls == 39:  # bottle
+                    # マスクデータを取得
+                    mask_data = masks.data[i].cpu().numpy()
+
+                    # マスクを元の画像サイズにリサイズ
+                    mask_resized = cv2.resize(mask_data, (w, h), interpolation=cv2.INTER_NEAREST)
+
+                    # マスクを統合（複数のボトルがある場合はOR結合）
+                    bottle_mask = cv2.bitwise_or(bottle_mask, (mask_resized * 255).astype(np.uint8))
+
+                    # 信頼度
+                    confidence = float(box.conf[0])
+
+                    # セグメンテーション結果を描画（緑色の半透明オーバーレイ）
+                    mask_colored = np.zeros_like(annotated_image)
+                    mask_colored[:, :, 1] = (mask_resized * 255).astype(np.uint8)  # 緑チャンネル
+                    annotated_image = cv2.addWeighted(annotated_image, 1.0, mask_colored, 0.3, 0)
+
+                    # バウンディングボックスも描画
+                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
+                    cv2.rectangle(annotated_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+                    # 信頼度を表示
+                    label = f"Bottle {confidence:.2f}"
+                    cv2.putText(annotated_image, label, (x1, y1 - 10),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+        return bottle_mask, annotated_image
+
+    except Exception as e:
+        logger.error(f"YOLOセグメンテーションエラー: {e}")
+        h, w = image.shape[:2]
+        return np.ones((h, w), dtype=np.uint8) * 255, image.copy()
+
 
 class LightingDifferenceWrinkleDetector:
     """
@@ -80,16 +175,20 @@ class LightingDifferenceWrinkleDetector:
         debug_images['1_coaxial_original'] = img_coaxial.copy()
         debug_images['2_top_original'] = img_top.copy()
 
+        # YOLOセグメンテーションでボトル領域を検出
+        bottle_mask, bottle_seg_image = detect_bottle_segmentation(img_coaxial)
+        debug_images['3_bottle_segmentation'] = bottle_seg_image
+
         # グレースケール変換
         gray_coax = cv2.cvtColor(img_coaxial, cv2.COLOR_BGR2GRAY)
         gray_top = cv2.cvtColor(img_top, cv2.COLOR_BGR2GRAY)
 
-        debug_images['3_coaxial_gray'] = gray_coax
-        debug_images['4_top_gray'] = gray_top
+        debug_images['4_coaxial_gray'] = gray_coax
+        debug_images['5_top_gray'] = gray_top
 
         # 差分計算（影の部分が強調される）
         diff = cv2.absdiff(gray_coax, gray_top)
-        debug_images['5_difference'] = diff
+        debug_images['6_difference'] = diff
 
         # より詳細な差分解析
         # 同軸照明の方が明るい部分（反射）
@@ -97,17 +196,21 @@ class LightingDifferenceWrinkleDetector:
         # 上方照明の方が明るい部分（通常は少ない）
         shadow = np.where(gray_top > gray_coax, gray_top - gray_coax, 0).astype(np.uint8)
 
-        debug_images['6_reflection'] = reflection
-        debug_images['7_shadow'] = shadow
+        debug_images['7_reflection'] = reflection
+        debug_images['8_shadow'] = shadow
 
         # シワは主に差分として現れる
         _, wrinkle_mask = cv2.threshold(diff, self.threshold, 255, cv2.THRESH_BINARY)
-        debug_images['8_threshold'] = wrinkle_mask
+        debug_images['9_threshold'] = wrinkle_mask
 
         # ノイズ除去（横長のカーネルで横シワを強調）
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 1))  # 横長
         wrinkle_mask = cv2.morphologyEx(wrinkle_mask, cv2.MORPH_CLOSE, kernel)
-        debug_images['9_morphology'] = wrinkle_mask
+        debug_images['10_morphology'] = wrinkle_mask
+
+        # ボトルマスクを適用（ボトル領域外を除外）
+        wrinkle_mask = cv2.bitwise_and(wrinkle_mask, bottle_mask)
+        debug_images['11_masked_wrinkles'] = wrinkle_mask
 
         return wrinkle_mask, diff, debug_images
 
@@ -130,6 +233,10 @@ class LightingDifferenceWrinkleDetector:
         debug_images['1_coaxial_original'] = img_coaxial.copy()
         debug_images['2_top_original'] = img_top.copy()
 
+        # YOLOセグメンテーションでボトル領域を検出
+        bottle_mask, bottle_seg_image = detect_bottle_segmentation(img_coaxial)
+        debug_images['3_bottle_segmentation'] = bottle_seg_image
+
         # 位置合わせ
         coax_aligned, top_aligned = self.align_images(img_coaxial, img_top)
 
@@ -141,14 +248,14 @@ class LightingDifferenceWrinkleDetector:
         coax_norm = cv2.normalize(gray_coax, None, 0, 255, cv2.NORM_MINMAX)
         top_norm = cv2.normalize(gray_top, None, 0, 255, cv2.NORM_MINMAX)
 
-        debug_images['3_coaxial_normalized'] = coax_norm
-        debug_images['4_top_normalized'] = top_norm
+        debug_images['4_coaxial_normalized'] = coax_norm
+        debug_images['5_top_normalized'] = top_norm
 
         # 差分計算（符号付き）
         diff = coax_norm.astype(float) - top_norm.astype(float)
         diff_normalized = cv2.normalize(diff, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
 
-        debug_images['5_difference'] = diff_normalized
+        debug_images['6_difference'] = diff_normalized
 
         # 横シワの特徴を強調
         # Sobelフィルタ（縦方向）で横エッジを検出
@@ -156,23 +263,27 @@ class LightingDifferenceWrinkleDetector:
         sobel_y_abs = np.abs(sobel_y)
         sobel_y_norm = cv2.normalize(sobel_y_abs, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
 
-        debug_images['6_sobel_vertical'] = sobel_y_norm
+        debug_images['7_sobel_vertical'] = sobel_y_norm
 
         # 閾値処理
         _, sobel_binary = cv2.threshold(sobel_y_norm, self.sobel_threshold, 255, cv2.THRESH_BINARY)
-        debug_images['7_sobel_threshold'] = sobel_binary
+        debug_images['8_sobel_threshold'] = sobel_binary
 
         # 横方向に連続性があるものを抽出
         kernel_h = np.ones((1, self.min_length), np.uint8)
         horizontal_features = cv2.morphologyEx(sobel_binary, cv2.MORPH_CLOSE, kernel_h)
 
-        debug_images['8_horizontal_features'] = horizontal_features
+        debug_images['9_horizontal_features'] = horizontal_features
 
         # さらにノイズ除去
         kernel_clean = np.ones((3, 3), np.uint8)
         horizontal_features = cv2.morphologyEx(horizontal_features, cv2.MORPH_OPEN, kernel_clean)
 
-        debug_images['9_final_wrinkles'] = horizontal_features
+        debug_images['10_cleaned_wrinkles'] = horizontal_features
+
+        # ボトルマスクを適用（ボトル領域外を除外）
+        horizontal_features = cv2.bitwise_and(horizontal_features, bottle_mask)
+        debug_images['11_masked_wrinkles'] = horizontal_features
 
         return horizontal_features, diff_normalized, debug_images
 
