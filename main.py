@@ -147,65 +147,69 @@ class WrinkleDetectionApp:
         camera_param_frame = ttk.LabelFrame(camera_control_frame, text="カメラパラメータ調整", padding="5")
         camera_param_frame.grid(row=4, column=0, columnspan=4, pady=5, sticky=(tk.W, tk.E))
 
+        # リセットボタン
+        ttk.Button(camera_param_frame, text="デフォルトに戻す",
+                  command=self.reset_camera_params).grid(row=0, column=3, padx=5, pady=2, sticky=tk.E)
+
         # 露出時間
-        ttk.Label(camera_param_frame, text="露出時間:").grid(row=0, column=0, sticky=tk.W, padx=5)
+        ttk.Label(camera_param_frame, text="露出時間:").grid(row=1, column=0, sticky=tk.W, padx=5)
         self.exposure_scale = ttk.Scale(camera_param_frame, from_=2000, to=20000,
                                        variable=self.param_exposure,
                                        orient=tk.HORIZONTAL, length=150,
                                        command=self.on_camera_param_change)
-        self.exposure_scale.grid(row=0, column=1, padx=5, pady=2)
+        self.exposure_scale.grid(row=1, column=1, padx=5, pady=2)
         self.exposure_label = ttk.Label(camera_param_frame, text=f"{self.param_exposure.get()}μs")
-        self.exposure_label.grid(row=0, column=2, padx=5)
+        self.exposure_label.grid(row=1, column=2, padx=5)
 
         # ゲイン（アナログ）
-        ttk.Label(camera_param_frame, text="ゲイン:").grid(row=1, column=0, sticky=tk.W, padx=5)
+        ttk.Label(camera_param_frame, text="ゲイン:").grid(row=2, column=0, sticky=tk.W, padx=5)
         self.gain_scale = ttk.Scale(camera_param_frame, from_=0, to=24,
                                    variable=self.param_gain,
                                    orient=tk.HORIZONTAL, length=150,
                                    command=self.on_camera_param_change)
-        self.gain_scale.grid(row=1, column=1, padx=5, pady=2)
+        self.gain_scale.grid(row=2, column=1, padx=5, pady=2)
         self.gain_label = ttk.Label(camera_param_frame, text=f"{self.param_gain.get():.1f}dB")
-        self.gain_label.grid(row=1, column=2, padx=5)
+        self.gain_label.grid(row=2, column=2, padx=5)
 
         # デジタルゲイン
-        ttk.Label(camera_param_frame, text="デジタルゲイン:").grid(row=2, column=0, sticky=tk.W, padx=5)
+        ttk.Label(camera_param_frame, text="デジタルゲイン:").grid(row=3, column=0, sticky=tk.W, padx=5)
         self.digital_gain_scale = ttk.Scale(camera_param_frame, from_=1.0, to=2.0,
                                            variable=self.param_digital_gain,
                                            orient=tk.HORIZONTAL, length=150,
                                            command=self.on_camera_param_change)
-        self.digital_gain_scale.grid(row=2, column=1, padx=5, pady=2)
+        self.digital_gain_scale.grid(row=3, column=1, padx=5, pady=2)
         self.digital_gain_label = ttk.Label(camera_param_frame, text=f"{self.param_digital_gain.get():.2f}x")
-        self.digital_gain_label.grid(row=2, column=2, padx=5)
+        self.digital_gain_label.grid(row=3, column=2, padx=5)
 
         # 黒レベル
-        ttk.Label(camera_param_frame, text="黒レベル:").grid(row=3, column=0, sticky=tk.W, padx=5)
+        ttk.Label(camera_param_frame, text="黒レベル:").grid(row=4, column=0, sticky=tk.W, padx=5)
         self.black_level_scale = ttk.Scale(camera_param_frame, from_=0, to=100,
                                           variable=self.param_black_level,
                                           orient=tk.HORIZONTAL, length=150,
                                           command=self.on_camera_param_change)
-        self.black_level_scale.grid(row=3, column=1, padx=5, pady=2)
+        self.black_level_scale.grid(row=4, column=1, padx=5, pady=2)
         self.black_level_label = ttk.Label(camera_param_frame, text=f"{self.param_black_level.get()}")
-        self.black_level_label.grid(row=3, column=2, padx=5)
+        self.black_level_label.grid(row=4, column=2, padx=5)
 
         # ホワイトバランス（赤）
-        ttk.Label(camera_param_frame, text="WB 赤:").grid(row=4, column=0, sticky=tk.W, padx=5)
+        ttk.Label(camera_param_frame, text="WB 赤:").grid(row=5, column=0, sticky=tk.W, padx=5)
         self.wb_red_scale = ttk.Scale(camera_param_frame, from_=0.5, to=2.0,
                                      variable=self.param_wb_red,
                                      orient=tk.HORIZONTAL, length=150,
                                      command=self.on_camera_param_change)
-        self.wb_red_scale.grid(row=4, column=1, padx=5, pady=2)
+        self.wb_red_scale.grid(row=5, column=1, padx=5, pady=2)
         self.wb_red_label = ttk.Label(camera_param_frame, text=f"{self.param_wb_red.get():.2f}")
-        self.wb_red_label.grid(row=4, column=2, padx=5)
+        self.wb_red_label.grid(row=5, column=2, padx=5)
 
         # ホワイトバランス（青）
-        ttk.Label(camera_param_frame, text="WB 青:").grid(row=5, column=0, sticky=tk.W, padx=5)
+        ttk.Label(camera_param_frame, text="WB 青:").grid(row=6, column=0, sticky=tk.W, padx=5)
         self.wb_blue_scale = ttk.Scale(camera_param_frame, from_=0.5, to=2.0,
                                       variable=self.param_wb_blue,
                                       orient=tk.HORIZONTAL, length=150,
                                       command=self.on_camera_param_change)
-        self.wb_blue_scale.grid(row=5, column=1, padx=5, pady=2)
+        self.wb_blue_scale.grid(row=6, column=1, padx=5, pady=2)
         self.wb_blue_label = ttk.Label(camera_param_frame, text=f"{self.param_wb_blue.get():.2f}")
-        self.wb_blue_label.grid(row=5, column=2, padx=5)
+        self.wb_blue_label.grid(row=6, column=2, padx=5)
 
         # データ収集フレーム
         control_frame = ttk.LabelFrame(main_frame, text="データ収集", padding="10")
@@ -629,6 +633,15 @@ class WrinkleDetectionApp:
                     self.camera.set_white_balance(self.param_wb_red.get(), self.param_wb_blue.get())
                 else:
                     messagebox.showerror("エラー", "カメラの切り替えに失敗しました")
+
+    def reset_camera_params(self):
+        """カメラパラメータをデフォルトに戻す"""
+        self.param_exposure.set(CAMERA_SETTINGS['exposure_time'])
+        self.param_gain.set(CAMERA_SETTINGS['gain'])
+        self.param_digital_gain.set(1.0)
+        self.param_black_level.set(0)
+        self.param_wb_red.set(1.0)
+        self.param_wb_blue.set(1.0)
 
     def on_camera_param_change(self, value):
         """カメラパラメータ変更時のコールバック"""
