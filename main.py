@@ -37,6 +37,9 @@ class WrinkleDetectionApp:
         self.last_capture_time = 0  # 最後に撮影した時刻
         self.bottle_detected = False  # 現在ボトルが検出されているか
 
+        # 現在のフレーム（CLAHE適用済み）
+        self.current_frame_corrected = None
+
         # 統計情報
         self.total_count = 0
         self.ok_count = 0
@@ -234,16 +237,24 @@ class WrinkleDetectionApp:
             frame = self.camera.capture_frame()
 
             if frame is not None:
-                # YOLOでボトル検出（常時実行）
-                try:
-                    yolo_boxes, display_frame = detect_bottle_with_yolo(frame)
+                # CLAHE（適応的ヒストグラム平坦化）を適用
+                # 白いラベルと黒いラベルの両方でシワが見えるように補正
+                from utils import apply_clahe
+                frame_corrected = apply_clahe(frame)
 
-                    # 自動撮影モードの処理
+                # 現在のフレームを保存（手動保存時に使用）
+                self.current_frame_corrected = frame_corrected
+
+                # YOLOでボトル検出（CLAHE適用後の画像で）
+                try:
+                    yolo_boxes, display_frame = detect_bottle_with_yolo(frame_corrected)
+
+                    # 自動撮影モードの処理（CLAHE適用後の画像を保存）
                     if self.auto_capture_running:
-                        self.auto_capture_process(frame, yolo_boxes)
+                        self.auto_capture_process(frame_corrected, yolo_boxes)
                 except:
-                    # YOLO失敗時は元の画像を使用
-                    display_frame = frame
+                    # YOLO失敗時は補正済み画像を使用
+                    display_frame = frame_corrected
 
                 # リサイズして表示
                 display_frame = resize_for_display(
@@ -604,21 +615,19 @@ class WrinkleDetectionApp:
 
     def save_to_dataset(self, label):
         """
-        現在のフレームを学習データセットとして保存
+        現在のフレームを学習データセットとして保存（CLAHE適用済み）
 
         Args:
             label: "ok" or "ng"
         """
-        # 現在のフレームをキャプチャ
-        frame = self.camera.capture_frame()
-
-        if frame is None:
+        # プレビュー中のCLAHE適用済みフレームを使用
+        if self.current_frame_corrected is None:
             messagebox.showerror("エラー", "画像の取得に失敗しました")
             return
 
         # データセットに保存
         try:
-            filepath = save_dataset_image(frame, label)
+            filepath = save_dataset_image(self.current_frame_corrected, label)
             # messagebox.showinfo("成功", f"{label.upper()}品として保存しました\n{filepath}")
 
             # カウンターを更新

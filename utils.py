@@ -241,15 +241,9 @@ def save_dataset_image(image, label):
     filename = f"{label}_{next_number:04d}_{timestamp}.jpg"
     filepath = os.path.join(save_dir, filename)
 
-    # CLAHE（適応的ヒストグラム平坦化）を適用
-    # 白いラベルと黒いラベルの両方でシワが見えるように補正
-    if DATASET_SETTINGS.get('use_clahe', True):
-        corrected_image = apply_clahe(image)
-        cv2.imwrite(filepath, corrected_image)
-        print(f"データセット画像保存（CLAHE適用済み）: {filepath}")
-    else:
-        cv2.imwrite(filepath, image)
-        print(f"データセット画像保存: {filepath}")
+    # 保存
+    cv2.imwrite(filepath, image)
+    print(f"データセット画像保存: {filepath}")
 
     return filepath
 
