@@ -40,6 +40,10 @@ class WrinkleDetectionApp:
         # 現在のフレーム（CLAHE適用済み）
         self.current_frame_corrected = None
 
+        # CLAHEパラメータ
+        self.clahe_clip_limit = tk.DoubleVar(value=DATASET_SETTINGS['clahe_clip_limit'])
+        self.clahe_tile_size = tk.IntVar(value=DATASET_SETTINGS['clahe_tile_size'])
+
         # 統計情報
         self.total_count = 0
         self.ok_count = 0
@@ -108,6 +112,28 @@ class WrinkleDetectionApp:
 
         self.stop_button = ttk.Button(camera_control_frame, text="カメラ停止", command=self.stop_camera, state=tk.DISABLED)
         self.stop_button.grid(row=2, column=2, columnspan=2, padx=5, pady=5, sticky=(tk.W, tk.E))
+
+        # CLAHE調整スライダー
+        clahe_frame = ttk.LabelFrame(camera_control_frame, text="CLAHE調整（白飛び・黒つぶれ対策）", padding="5")
+        clahe_frame.grid(row=3, column=0, columnspan=4, pady=5, sticky=(tk.W, tk.E))
+
+        ttk.Label(clahe_frame, text="クリップ限界:").grid(row=0, column=0, sticky=tk.W, padx=5)
+        self.clahe_clip_scale = ttk.Scale(clahe_frame, from_=0.5, to=4.0,
+                                         variable=self.clahe_clip_limit,
+                                         orient=tk.HORIZONTAL, length=150)
+        self.clahe_clip_scale.grid(row=0, column=1, padx=5, pady=2)
+        self.clahe_clip_label = ttk.Label(clahe_frame, text=f"{self.clahe_clip_limit.get():.1f}")
+        self.clahe_clip_label.grid(row=0, column=2, padx=5)
+        self.clahe_clip_limit.trace_add('write', lambda *args: self.clahe_clip_label.config(text=f"{self.clahe_clip_limit.get():.1f}"))
+
+        ttk.Label(clahe_frame, text="タイルサイズ:").grid(row=1, column=0, sticky=tk.W, padx=5)
+        self.clahe_tile_scale = ttk.Scale(clahe_frame, from_=2, to=16,
+                                         variable=self.clahe_tile_size,
+                                         orient=tk.HORIZONTAL, length=150)
+        self.clahe_tile_scale.grid(row=1, column=1, padx=5, pady=2)
+        self.clahe_tile_label = ttk.Label(clahe_frame, text=f"{self.clahe_tile_size.get()}")
+        self.clahe_tile_label.grid(row=1, column=2, padx=5)
+        self.clahe_tile_size.trace_add('write', lambda *args: self.clahe_tile_label.config(text=f"{self.clahe_tile_size.get()}"))
 
         # データ収集フレーム
         control_frame = ttk.LabelFrame(main_frame, text="データ収集", padding="10")
@@ -239,8 +265,16 @@ class WrinkleDetectionApp:
             if frame is not None:
                 # CLAHE（適応的ヒストグラム平坦化）を適用
                 # 白いラベルと黒いラベルの両方でシワが見えるように補正
-                from utils import apply_clahe
-                frame_corrected = apply_clahe(frame)
+                # スライダーの値を使って動的に調整
+                clip_limit = self.clahe_clip_limit.get()
+                tile_size = int(self.clahe_tile_size.get())
+
+                clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(tile_size, tile_size))
+
+                # L*a*b*色空間でCLAHE適用
+                lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+                lab[:, :, 0] = clahe.apply(lab[:, :, 0])
+                frame_corrected = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
 
                 # 現在のフレームを保存（手動保存時に使用）
                 self.current_frame_corrected = frame_corrected

@@ -88,8 +88,8 @@ DATASET_SETTINGS = {
 
     # CLAHE（適応的ヒストグラム平坦化）設定
     'use_clahe': True,  # CLAHEを使用するか
-    'clahe_clip_limit': 2.0,  # クリップ限界（1.0-4.0）
-    'clahe_tile_size': 8,  # タイルサイズ（4-16）
+    'clahe_clip_limit': 1.0,  # クリップ限界（小さいほど白飛び抑制）
+    'clahe_tile_size': 4,  # タイルサイズ（小さいほど細かく調整）
 }
 
 # GUI設定
