@@ -331,6 +331,61 @@ class StCameraControl:
         gain_value = (brightness / 255.0) * 30.0
         self.set_gain(gain_value)
 
+    def set_gamma(self, gamma: float):
+        """
+        ガンマ補正を設定
+
+        Args:
+            gamma: ガンマ値（0.5-2.0）
+        """
+        if not self.is_opened or not self.image_acquirer:
+            logger.warning("カメラが開かれていません")
+            return
+
+        try:
+            node_map = self.image_acquirer.remote_device.node_map
+            if hasattr(node_map, 'Gamma'):
+                node_map.Gamma.value = float(gamma)
+                logger.info(f"ガンマ設定: {gamma}")
+            else:
+                logger.warning("このカメラはガンマ設定に対応していません")
+        except Exception as e:
+            logger.error(f"ガンマ設定エラー: {e}")
+
+    def set_white_balance(self, red_ratio: float, blue_ratio: float):
+        """
+        ホワイトバランスを設定
+
+        Args:
+            red_ratio: 赤の比率（0.5-2.0）
+            blue_ratio: 青の比率（0.5-2.0）
+        """
+        if not self.is_opened or not self.image_acquirer:
+            logger.warning("カメラが開かれていません")
+            return
+
+        try:
+            node_map = self.image_acquirer.remote_device.node_map
+
+            # ホワイトバランスを手動に設定
+            if hasattr(node_map, 'BalanceWhiteAuto'):
+                node_map.BalanceWhiteAuto.value = "Off"
+
+            # 赤の比率を設定
+            if hasattr(node_map, 'BalanceRatioSelector') and hasattr(node_map, 'BalanceRatio'):
+                node_map.BalanceRatioSelector.value = "Red"
+                node_map.BalanceRatio.value = float(red_ratio)
+
+                # 青の比率を設定
+                node_map.BalanceRatioSelector.value = "Blue"
+                node_map.BalanceRatio.value = float(blue_ratio)
+
+                logger.info(f"ホワイトバランス設定: R={red_ratio:.2f}, B={blue_ratio:.2f}")
+            else:
+                logger.warning("このカメラはホワイトバランス設定に対応していません")
+        except Exception as e:
+            logger.error(f"ホワイトバランス設定エラー: {e}")
+
     def set_bayer_pattern(self, pattern: str):
         """
         Bayerパターンを設定

@@ -44,6 +44,13 @@ class WrinkleDetectionApp:
         self.clahe_clip_limit = tk.DoubleVar(value=DATASET_SETTINGS['clahe_clip_limit'])
         self.clahe_tile_size = tk.IntVar(value=DATASET_SETTINGS['clahe_tile_size'])
 
+        # カメラパラメータ
+        self.param_exposure = tk.IntVar(value=CAMERA_SETTINGS['exposure_time'])
+        self.param_gain = tk.DoubleVar(value=CAMERA_SETTINGS['gain'])
+        self.param_gamma = tk.DoubleVar(value=1.0)
+        self.param_wb_red = tk.DoubleVar(value=1.0)
+        self.param_wb_blue = tk.DoubleVar(value=1.0)
+
         # 統計情報
         self.total_count = 0
         self.ok_count = 0
@@ -135,6 +142,60 @@ class WrinkleDetectionApp:
         self.clahe_tile_label.grid(row=1, column=2, padx=5)
         self.clahe_tile_size.trace_add('write', lambda *args: self.clahe_tile_label.config(text=f"{self.clahe_tile_size.get()}"))
 
+        # カメラパラメータ調整スライダー
+        camera_param_frame = ttk.LabelFrame(camera_control_frame, text="カメラパラメータ調整", padding="5")
+        camera_param_frame.grid(row=4, column=0, columnspan=4, pady=5, sticky=(tk.W, tk.E))
+
+        # 露出時間
+        ttk.Label(camera_param_frame, text="露出時間:").grid(row=0, column=0, sticky=tk.W, padx=5)
+        self.exposure_scale = ttk.Scale(camera_param_frame, from_=2000, to=20000,
+                                       variable=self.param_exposure,
+                                       orient=tk.HORIZONTAL, length=150,
+                                       command=self.on_camera_param_change)
+        self.exposure_scale.grid(row=0, column=1, padx=5, pady=2)
+        self.exposure_label = ttk.Label(camera_param_frame, text=f"{self.param_exposure.get()}μs")
+        self.exposure_label.grid(row=0, column=2, padx=5)
+
+        # ゲイン
+        ttk.Label(camera_param_frame, text="ゲイン:").grid(row=1, column=0, sticky=tk.W, padx=5)
+        self.gain_scale = ttk.Scale(camera_param_frame, from_=0, to=20,
+                                   variable=self.param_gain,
+                                   orient=tk.HORIZONTAL, length=150,
+                                   command=self.on_camera_param_change)
+        self.gain_scale.grid(row=1, column=1, padx=5, pady=2)
+        self.gain_label = ttk.Label(camera_param_frame, text=f"{self.param_gain.get():.1f}dB")
+        self.gain_label.grid(row=1, column=2, padx=5)
+
+        # ガンマ
+        ttk.Label(camera_param_frame, text="ガンマ:").grid(row=2, column=0, sticky=tk.W, padx=5)
+        self.gamma_scale = ttk.Scale(camera_param_frame, from_=0.5, to=2.0,
+                                    variable=self.param_gamma,
+                                    orient=tk.HORIZONTAL, length=150,
+                                    command=self.on_camera_param_change)
+        self.gamma_scale.grid(row=2, column=1, padx=5, pady=2)
+        self.gamma_label = ttk.Label(camera_param_frame, text=f"{self.param_gamma.get():.2f}")
+        self.gamma_label.grid(row=2, column=2, padx=5)
+
+        # ホワイトバランス（赤）
+        ttk.Label(camera_param_frame, text="WB 赤:").grid(row=3, column=0, sticky=tk.W, padx=5)
+        self.wb_red_scale = ttk.Scale(camera_param_frame, from_=0.5, to=2.0,
+                                     variable=self.param_wb_red,
+                                     orient=tk.HORIZONTAL, length=150,
+                                     command=self.on_camera_param_change)
+        self.wb_red_scale.grid(row=3, column=1, padx=5, pady=2)
+        self.wb_red_label = ttk.Label(camera_param_frame, text=f"{self.param_wb_red.get():.2f}")
+        self.wb_red_label.grid(row=3, column=2, padx=5)
+
+        # ホワイトバランス（青）
+        ttk.Label(camera_param_frame, text="WB 青:").grid(row=4, column=0, sticky=tk.W, padx=5)
+        self.wb_blue_scale = ttk.Scale(camera_param_frame, from_=0.5, to=2.0,
+                                      variable=self.param_wb_blue,
+                                      orient=tk.HORIZONTAL, length=150,
+                                      command=self.on_camera_param_change)
+        self.wb_blue_scale.grid(row=4, column=1, padx=5, pady=2)
+        self.wb_blue_label = ttk.Label(camera_param_frame, text=f"{self.param_wb_blue.get():.2f}")
+        self.wb_blue_label.grid(row=4, column=2, padx=5)
+
         # データ収集フレーム
         control_frame = ttk.LabelFrame(main_frame, text="データ収集", padding="10")
         control_frame.grid(row=1, column=1, padx=5, pady=5, sticky=(tk.W, tk.E, tk.N))
@@ -214,10 +275,11 @@ class WrinkleDetectionApp:
         if self.camera.open(camera_index):
             self.is_running = True
 
-            # カメラ設定を適用（デフォルト値）
-            self.camera.set_exposure(CAMERA_SETTINGS['exposure_time'])
-            self.camera.set_gain(CAMERA_SETTINGS['gain'])
-            self.camera.set_brightness(CAMERA_SETTINGS['brightness'])
+            # カメラ設定を適用（スライダーの値）
+            self.camera.set_exposure(self.param_exposure.get())
+            self.camera.set_gain(self.param_gain.get())
+            self.camera.set_gamma(self.param_gamma.get())
+            self.camera.set_white_balance(self.param_wb_red.get(), self.param_wb_blue.get())
 
             # ボタン状態変更
             self.start_button.config(state=tk.DISABLED)
@@ -547,13 +609,29 @@ class WrinkleDetectionApp:
 
                 # カメラを切り替え
                 if self.camera.switch_camera(camera_index):
-                    # カメラ設定を再適用（デフォルト値）
-                    self.camera.set_exposure(CAMERA_SETTINGS['exposure_time'])
-                    self.camera.set_gain(CAMERA_SETTINGS['gain'])
-                    self.camera.set_brightness(CAMERA_SETTINGS['brightness'])
-                    # messagebox.showinfo("成功", f"カメラ {camera_index} に切り替えました")
+                    # カメラ設定を再適用（スライダーの値）
+                    self.camera.set_exposure(self.param_exposure.get())
+                    self.camera.set_gain(self.param_gain.get())
+                    self.camera.set_gamma(self.param_gamma.get())
+                    self.camera.set_white_balance(self.param_wb_red.get(), self.param_wb_blue.get())
                 else:
                     messagebox.showerror("エラー", "カメラの切り替えに失敗しました")
+
+    def on_camera_param_change(self, value):
+        """カメラパラメータ変更時のコールバック"""
+        # ラベルを更新
+        self.exposure_label.config(text=f"{self.param_exposure.get()}μs")
+        self.gain_label.config(text=f"{self.param_gain.get():.1f}dB")
+        self.gamma_label.config(text=f"{self.param_gamma.get():.2f}")
+        self.wb_red_label.config(text=f"{self.param_wb_red.get():.2f}")
+        self.wb_blue_label.config(text=f"{self.param_wb_blue.get():.2f}")
+
+        # カメラが起動中の場合は設定を適用
+        if self.is_running:
+            self.camera.set_exposure(self.param_exposure.get())
+            self.camera.set_gain(self.param_gain.get())
+            self.camera.set_gamma(self.param_gamma.get())
+            self.camera.set_white_balance(self.param_wb_red.get(), self.param_wb_blue.get())
 
     def on_interval_change(self, value):
         """撮影間隔変更時"""
@@ -562,19 +640,25 @@ class WrinkleDetectionApp:
 
     def set_normal_mode(self):
         """通常モードに設定"""
+        # スライダーの値を通常モードに変更
+        self.param_exposure.set(CAMERA_SETTINGS['exposure_time'])
+        self.param_gain.set(CAMERA_SETTINGS['gain'])
+
         if self.is_running:
-            self.camera.set_exposure(CAMERA_SETTINGS['exposure_time'])
-            self.camera.set_gain(CAMERA_SETTINGS['gain'])
-            self.camera.set_brightness(CAMERA_SETTINGS['brightness'])
-            print(f"通常モード: 露出={CAMERA_SETTINGS['exposure_time']}μs, ゲイン={CAMERA_SETTINGS['gain']}dB")
+            self.camera.set_exposure(self.param_exposure.get())
+            self.camera.set_gain(self.param_gain.get())
+            print(f"通常モード: 露出={self.param_exposure.get()}μs, ゲイン={self.param_gain.get()}dB")
 
     def set_fast_mode(self):
         """ブレ防止モードに設定"""
+        # スライダーの値をブレ防止モードに変更
+        self.param_exposure.set(CAMERA_SETTINGS['exposure_time_fast'])
+        self.param_gain.set(CAMERA_SETTINGS['gain_fast'])
+
         if self.is_running:
-            self.camera.set_exposure(CAMERA_SETTINGS['exposure_time_fast'])
-            self.camera.set_gain(CAMERA_SETTINGS['gain_fast'])
-            self.camera.set_brightness(CAMERA_SETTINGS['brightness_fast'])
-            print(f"ブレ防止モード: 露出={CAMERA_SETTINGS['exposure_time_fast']}μs, ゲイン={CAMERA_SETTINGS['gain_fast']}dB")
+            self.camera.set_exposure(self.param_exposure.get())
+            self.camera.set_gain(self.param_gain.get())
+            print(f"ブレ防止モード: 露出={self.param_exposure.get()}μs, ゲイン={self.param_gain.get()}dB")
 
     def start_auto_capture(self):
         """自動撮影を開始"""
