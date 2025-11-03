@@ -33,7 +33,7 @@ class StCameraControl:
         self.is_opened = False
         self.current_camera_index = None
         self.current_backend = "Harvesters (GenICam)"
-        self.bayer_pattern = "BG"  # デフォルトはBG（正しいパターン）
+        self.bayer_pattern = "RG"  # デフォルトはRG（BayerRG12センサー）
 
     def open(self, camera_index: Optional[int] = None) -> bool:
         """

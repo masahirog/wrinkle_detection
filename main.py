@@ -51,7 +51,7 @@ class WrinkleDetectionApp:
         self.param_black_level = tk.IntVar(value=0)
         self.param_wb_red = tk.DoubleVar(value=1.0)
         self.param_wb_blue = tk.DoubleVar(value=1.0)
-        self.bayer_pattern = tk.StringVar(value="BG")
+        self.bayer_pattern = tk.StringVar(value="RG")  # BayerRG12センサー
 
         # 統計情報
         self.total_count = 0
@@ -351,18 +351,28 @@ class WrinkleDetectionApp:
             frame = self.camera.capture_frame()
 
             if frame is not None:
+                # デバッグ: 元の画像の色を確認
+                # print(f"元画像の平均色 B:{frame[:,:,0].mean():.1f} G:{frame[:,:,1].mean():.1f} R:{frame[:,:,2].mean():.1f}")
+
                 # CLAHE（適応的ヒストグラム平坦化）を適用
                 # 白いラベルと黒いラベルの両方でシワが見えるように補正
                 # スライダーの値を使って動的に調整
                 clip_limit = self.clahe_clip_limit.get()
                 tile_size = int(self.clahe_tile_size.get())
 
-                clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(tile_size, tile_size))
+                # CLAHEを適用する場合
+                if DATASET_SETTINGS.get('use_clahe', True):
+                    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(tile_size, tile_size))
 
-                # L*a*b*色空間でCLAHE適用
-                lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
-                lab[:, :, 0] = clahe.apply(lab[:, :, 0])
-                frame_corrected = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+                    # L*a*b*色空間でCLAHE適用
+                    lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+                    lab[:, :, 0] = clahe.apply(lab[:, :, 0])
+                    frame_corrected = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+                else:
+                    frame_corrected = frame.copy()
+
+                # デバッグ: CLAHE後の画像の色を確認
+                # print(f"CLAHE後の平均色 B:{frame_corrected[:,:,0].mean():.1f} G:{frame_corrected[:,:,1].mean():.1f} R:{frame_corrected[:,:,2].mean():.1f}")
 
                 # 現在のフレームを保存（手動保存時に使用）
                 self.current_frame_corrected = frame_corrected
@@ -652,7 +662,7 @@ class WrinkleDetectionApp:
         self.param_black_level.set(0)
         self.param_wb_red.set(1.0)
         self.param_wb_blue.set(1.0)
-        self.bayer_pattern.set("BG")
+        self.bayer_pattern.set("RG")  # BayerRG12センサーの正しいパターン
 
     def on_bayer_change(self, event):
         """Bayerパターン変更時のコールバック"""
