@@ -70,13 +70,21 @@ SAVE_SETTINGS = {
     'log_file': 'results/detection_log.csv',
 }
 
-# 学習データセット設定
+# 学習データセット設定（YOLOv8用）
 DATASET_SETTINGS = {
     'dataset_dir': 'dataset',  # データセットのルートディレクトリ
     'ok_dir': 'dataset/ok',    # OK品の画像保存先
     'ng_dir': 'dataset/ng',    # NG品の画像保存先
-    'target_ok_count': 50,     # 目標OK品枚数
-    'target_ng_count': 50,     # 目標NG品枚数
+    'target_ok_count': 1500,   # 目標OK品枚数（YOLOv8学習用）
+    'target_ng_count': 1500,   # 目標NG品枚数（YOLOv8学習用）
+
+    # YOLOv8用のディレクトリ構成
+    'yolo_dataset_dir': 'yolo_dataset',
+    'yolo_images_train': 'yolo_dataset/images/train',
+    'yolo_images_val': 'yolo_dataset/images/val',
+    'yolo_labels_train': 'yolo_dataset/labels/train',
+    'yolo_labels_val': 'yolo_dataset/labels/val',
+    'train_val_split': 0.8,  # 80%を訓練、20%を検証
 }
 
 # GUI設定

@@ -744,8 +744,20 @@ class WrinkleDetectionApp:
                         current_index[0] = len(ok_images) - 1
                     show_image()
 
+        def annotate_wrinkle():
+            """シワをアノテーション"""
+            if 0 <= current_index[0] < len(ok_images):
+                from annotation_tool import WrinkleAnnotationTool
+
+                def on_annotation_saved(image_path, polygons):
+                    print(f"アノテーション保存完了: {len(polygons)}個のシワ")
+
+                # アノテーションツールを開く
+                WrinkleAnnotationTool(review_window, ok_images[current_index[0]], on_annotation_saved)
+
         # ボタン配置
         ttk.Button(button_frame, text="← 前へ", command=prev_image).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="シワをアノテーション", command=annotate_wrinkle).pack(side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text="NG品として移動", command=move_to_ng).pack(side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text="次へ →", command=next_image).pack(side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text="閉じる", command=review_window.destroy).pack(side=tk.LEFT, padx=5)
