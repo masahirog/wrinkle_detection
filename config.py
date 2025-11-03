@@ -85,6 +85,11 @@ DATASET_SETTINGS = {
     'yolo_labels_train': 'yolo_dataset/labels/train',
     'yolo_labels_val': 'yolo_dataset/labels/val',
     'train_val_split': 0.8,  # 80%を訓練、20%を検証
+
+    # CLAHE（適応的ヒストグラム平坦化）設定
+    'use_clahe': True,  # CLAHEを使用するか
+    'clahe_clip_limit': 2.0,  # クリップ限界（1.0-4.0）
+    'clahe_tile_size': 8,  # タイルサイズ（4-16）
 }
 
 # GUI設定

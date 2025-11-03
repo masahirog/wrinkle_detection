@@ -11,6 +11,50 @@ from datetime import datetime
 import cv2
 from config import SAVE_SETTINGS
 
+# CLAHE（適応的ヒストグラム平坦化）
+_clahe = None
+
+
+def get_clahe():
+    """CLAHEオブジェクトを取得（シングルトン）"""
+    global _clahe
+    if _clahe is None:
+        from config import DATASET_SETTINGS
+        clip_limit = DATASET_SETTINGS.get('clahe_clip_limit', 2.0)
+        tile_size = DATASET_SETTINGS.get('clahe_tile_size', 8)
+        _clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(tile_size, tile_size))
+    return _clahe
+
+
+def apply_clahe(image):
+    """
+    CLAHE（適応的ヒストグラム平坦化）を適用
+    白いラベルと黒いラベルの両方でシワが見えるように補正
+
+    Args:
+        image: 入力画像（BGR）
+
+    Returns:
+        corrected: 補正後の画像（BGR）
+    """
+    clahe = get_clahe()
+
+    # カラー画像の場合、L*a*b*色空間のLチャンネルに適用
+    if len(image.shape) == 3:
+        # BGR → Lab色空間に変換
+        lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+
+        # L（明度）チャンネルにCLAHEを適用
+        lab[:, :, 0] = clahe.apply(lab[:, :, 0])
+
+        # Lab → BGRに戻す
+        corrected = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+    else:
+        # グレースケールの場合
+        corrected = clahe.apply(image)
+
+    return corrected
+
 
 def ensure_directories():
     """必要なディレクトリを作成"""
@@ -197,9 +241,15 @@ def save_dataset_image(image, label):
     filename = f"{label}_{next_number:04d}_{timestamp}.jpg"
     filepath = os.path.join(save_dir, filename)
 
-    # 保存
-    cv2.imwrite(filepath, image)
-    print(f"データセット画像保存: {filepath}")
+    # CLAHE（適応的ヒストグラム平坦化）を適用
+    # 白いラベルと黒いラベルの両方でシワが見えるように補正
+    if DATASET_SETTINGS.get('use_clahe', True):
+        corrected_image = apply_clahe(image)
+        cv2.imwrite(filepath, corrected_image)
+        print(f"データセット画像保存（CLAHE適用済み）: {filepath}")
+    else:
+        cv2.imwrite(filepath, image)
+        print(f"データセット画像保存: {filepath}")
 
     return filepath
 
