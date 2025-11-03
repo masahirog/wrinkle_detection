@@ -331,12 +331,12 @@ class StCameraControl:
         gain_value = (brightness / 255.0) * 30.0
         self.set_gain(gain_value)
 
-    def set_gamma(self, gamma: float):
+    def set_digital_gain(self, digital_gain: float):
         """
-        ガンマ補正を設定
+        デジタルゲインを設定
 
         Args:
-            gamma: ガンマ値（0.5-2.0）
+            digital_gain: デジタルゲイン値（1.0-2.0倍）
         """
         if not self.is_opened or not self.image_acquirer:
             logger.warning("カメラが開かれていません")
@@ -344,13 +344,40 @@ class StCameraControl:
 
         try:
             node_map = self.image_acquirer.remote_device.node_map
-            if hasattr(node_map, 'Gamma'):
-                node_map.Gamma.value = float(gamma)
-                logger.info(f"ガンマ設定: {gamma}")
+
+            # デジタルシフト（ビットシフト）で実現
+            if hasattr(node_map, 'DigitalShift'):
+                # 1.0-2.0倍を0-1のシフト量に変換
+                # 2^shift = gain → shift = log2(gain)
+                shift = int(np.log2(digital_gain))
+                node_map.DigitalShift.value = shift
+                logger.info(f"デジタルゲイン設定: {digital_gain:.2f}倍 (shift={shift})")
             else:
-                logger.warning("このカメラはガンマ設定に対応していません")
+                logger.warning("このカメラはデジタルゲイン設定に対応していません")
         except Exception as e:
-            logger.error(f"ガンマ設定エラー: {e}")
+            logger.error(f"デジタルゲイン設定エラー: {e}")
+
+    def set_black_level(self, black_level: int):
+        """
+        黒レベルを設定
+
+        Args:
+            black_level: 黒レベル値（0-100）
+        """
+        if not self.is_opened or not self.image_acquirer:
+            logger.warning("カメラが開かれていません")
+            return
+
+        try:
+            node_map = self.image_acquirer.remote_device.node_map
+
+            if hasattr(node_map, 'BlackLevel'):
+                node_map.BlackLevel.value = int(black_level)
+                logger.info(f"黒レベル設定: {black_level}")
+            else:
+                logger.warning("このカメラは黒レベル設定に対応していません")
+        except Exception as e:
+            logger.error(f"黒レベル設定エラー: {e}")
 
     def set_white_balance(self, red_ratio: float, blue_ratio: float):
         """
