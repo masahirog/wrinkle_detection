@@ -51,6 +51,7 @@ class WrinkleDetectionApp:
         self.param_black_level = tk.IntVar(value=0)
         self.param_wb_red = tk.DoubleVar(value=1.0)
         self.param_wb_blue = tk.DoubleVar(value=1.0)
+        self.bayer_pattern = tk.StringVar(value="BG")
 
         # 統計情報
         self.total_count = 0
@@ -150,6 +151,14 @@ class WrinkleDetectionApp:
         # リセットボタン
         ttk.Button(camera_param_frame, text="デフォルトに戻す",
                   command=self.reset_camera_params).grid(row=0, column=3, padx=5, pady=2, sticky=tk.E)
+
+        # Bayerパターン選択
+        ttk.Label(camera_param_frame, text="Bayerパターン:").grid(row=0, column=0, sticky=tk.W, padx=5)
+        bayer_combo = ttk.Combobox(camera_param_frame, textvariable=self.bayer_pattern,
+                                  values=["BG", "GB", "RG", "GR"],
+                                  state='readonly', width=5)
+        bayer_combo.grid(row=0, column=1, sticky=tk.W, padx=5, pady=2)
+        bayer_combo.bind('<<ComboboxSelected>>', self.on_bayer_change)
 
         # 露出時間
         ttk.Label(camera_param_frame, text="露出時間:").grid(row=1, column=0, sticky=tk.W, padx=5)
@@ -291,6 +300,7 @@ class WrinkleDetectionApp:
             self.is_running = True
 
             # カメラ設定を適用（スライダーの値）
+            self.camera.set_bayer_pattern(self.bayer_pattern.get())
             self.camera.set_exposure(self.param_exposure.get())
             self.camera.set_gain(self.param_gain.get())
             self.camera.set_digital_gain(self.param_digital_gain.get())
@@ -642,6 +652,13 @@ class WrinkleDetectionApp:
         self.param_black_level.set(0)
         self.param_wb_red.set(1.0)
         self.param_wb_blue.set(1.0)
+        self.bayer_pattern.set("BG")
+
+    def on_bayer_change(self, event):
+        """Bayerパターン変更時のコールバック"""
+        pattern = self.bayer_pattern.get()
+        self.camera.set_bayer_pattern(pattern)
+        print(f"Bayerパターン変更: {pattern}")
 
     def on_camera_param_change(self, value):
         """カメラパラメータ変更時のコールバック"""
