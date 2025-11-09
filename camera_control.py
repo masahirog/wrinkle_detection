@@ -33,7 +33,8 @@ class StCameraControl:
         self.is_opened = False
         self.current_camera_index = None
         self.current_backend = "Harvesters (GenICam)"
-        self.bayer_pattern = "RG"  # デフォルトはRG（BayerRG12センサー）
+        self.bayer_pattern = "BG"  # デフォルトはBG（正常動作するパターン）
+        self.rotation = 0  # 回転角度（0, 90, 180, 270）
 
     def open(self, camera_index: Optional[int] = None) -> bool:
         """
@@ -232,7 +233,7 @@ class StCameraControl:
 
                     # 10bit/12bitの場合、8bitに正規化
                     if "12" in pixel_format:
-                        # 12bit → 8bit
+                        # 12bit → 8bit（単純な線形変換）
                         if raw_data.dtype == np.uint16:
                             # 既に16bitの場合
                             image_16bit = raw_data.reshape(component.height, component.width)
@@ -264,6 +265,62 @@ class StCameraControl:
 
                     conversion = bayer_map.get(self.bayer_pattern, cv2.COLOR_BAYER_BG2BGR)
                     image_bgr = cv2.cvtColor(image, conversion)
+
+                    # ソフトウェア側でホワイトバランスを適用
+                    wb_red = getattr(self, 'wb_red_ratio', 1.0)
+                    wb_blue = getattr(self, 'wb_blue_ratio', 1.0)
+
+                    if wb_red != 1.0 or wb_blue != 1.0:
+                        # float32に変換してゲイン適用
+                        image_float = image_bgr.astype(np.float32)
+                        image_float[:, :, 2] *= wb_red   # Rチャンネル
+                        image_float[:, :, 0] *= wb_blue  # Bチャンネル
+
+                        # クリップして8bitに戻す
+                        image_bgr = np.clip(image_float, 0, 255).astype(np.uint8)
+
+                    # ハイライト圧縮を適用（白飛び部分を暗くする）
+                    highlight_comp = getattr(self, 'highlight_compression', 1.0)
+                    if highlight_comp < 1.0:
+                        # L*a*b*色空間に変換して輝度だけを処理
+                        lab = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2LAB)
+                        l_channel = lab[:, :, 0].astype(np.float32)
+
+                        # 明るい部分（150以上）を圧縮
+                        threshold = 150.0
+                        max_brightness = 180.0  # 圧縮率0.0の時の最大輝度
+                        bright_mask = l_channel > threshold
+
+                        # 圧縮処理: threshold + (元の値 - threshold) * 圧縮率
+                        # 圧縮率0.0の時、255 → max_brightnessに制限
+                        range_max = threshold + (max_brightness - threshold) + (255 - max_brightness) * highlight_comp
+                        compressed = threshold + (l_channel - threshold) * (range_max - threshold) / (255 - threshold)
+                        l_channel[bright_mask] = compressed[bright_mask]
+
+                        # 0-255にクリップして8bitに戻す
+                        lab[:, :, 0] = np.clip(l_channel, 0, 255).astype(np.uint8)
+
+                        # BGRに戻す
+                        image_bgr = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+
+                    # 彩度調整を適用
+                    saturation = getattr(self, 'saturation', 1.0)
+                    if saturation < 1.0:
+                        # HSV色空間に変換して彩度を調整
+                        hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV).astype(np.float32)
+                        hsv[:, :, 1] *= saturation  # Sチャンネル（彩度）を調整
+                        hsv[:, :, 1] = np.clip(hsv[:, :, 1], 0, 255)
+                        image_bgr = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+
+                    # 画像回転を適用
+                    rotation = getattr(self, 'rotation', 0)
+                    if rotation == 90:
+                        image_bgr = cv2.rotate(image_bgr, cv2.ROTATE_90_CLOCKWISE)
+                    elif rotation == 180:
+                        image_bgr = cv2.rotate(image_bgr, cv2.ROTATE_180)
+                    elif rotation == 270:
+                        image_bgr = cv2.rotate(image_bgr, cv2.ROTATE_90_COUNTERCLOCKWISE)
+
                 elif len(image.shape) == 2:
                     # モノクロの場合、BGRに変換
                     image_bgr = np.stack([image, image, image], axis=2)
@@ -381,37 +438,46 @@ class StCameraControl:
 
     def set_white_balance(self, red_ratio: float, blue_ratio: float):
         """
-        ホワイトバランスを設定
+        ホワイトバランスを設定（ソフトウェア側で処理）
 
         Args:
-            red_ratio: 赤の比率（0.5-2.0）
-            blue_ratio: 青の比率（0.5-2.0）
+            red_ratio: 赤の比率（0.5-4.0）
+            blue_ratio: 青の比率（0.5-4.0）
         """
-        if not self.is_opened or not self.image_acquirer:
-            logger.warning("カメラが開かれていません")
-            return
+        # ソフトウェア側でゲインをかけるため、値を保持
+        self.wb_red_ratio = red_ratio
+        self.wb_blue_ratio = blue_ratio
+        logger.info(f"ホワイトバランス設定（ソフトウェア）: R={red_ratio:.2f}x, B={blue_ratio:.2f}x")
 
-        try:
-            node_map = self.image_acquirer.remote_device.node_map
+    def set_highlight_compression(self, compression: float):
+        """
+        ハイライト圧縮を設定
 
-            # ホワイトバランスを手動に設定
-            if hasattr(node_map, 'BalanceWhiteAuto'):
-                node_map.BalanceWhiteAuto.value = "Off"
+        Args:
+            compression: 圧縮率（0.0-1.0、1.0=圧縮なし、0.0=最大圧縮）
+        """
+        self.highlight_compression = compression
+        logger.info(f"ハイライト圧縮設定: {compression:.2f}")
 
-            # 赤の比率を設定
-            if hasattr(node_map, 'BalanceRatioSelector') and hasattr(node_map, 'BalanceRatio'):
-                node_map.BalanceRatioSelector.value = "Red"
-                node_map.BalanceRatio.value = float(red_ratio)
+    def set_saturation(self, saturation: float):
+        """
+        彩度を設定
 
-                # 青の比率を設定
-                node_map.BalanceRatioSelector.value = "Blue"
-                node_map.BalanceRatio.value = float(blue_ratio)
+        Args:
+            saturation: 彩度（0.0-1.0、1.0=フルカラー、0.0=白黒）
+        """
+        self.saturation = saturation
+        logger.info(f"彩度設定: {saturation:.2f}")
 
-                logger.info(f"ホワイトバランス設定: R={red_ratio:.2f}, B={blue_ratio:.2f}")
-            else:
-                logger.warning("このカメラはホワイトバランス設定に対応していません")
-        except Exception as e:
-            logger.error(f"ホワイトバランス設定エラー: {e}")
+    def set_rotation(self, rotation: int):
+        """
+        画像回転を設定
+
+        Args:
+            rotation: 回転角度（0, 90, 180, 270）
+        """
+        self.rotation = rotation
+        logger.info(f"回転設定: {rotation}度")
 
     def set_bayer_pattern(self, pattern: str):
         """

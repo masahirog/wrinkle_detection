@@ -5,13 +5,16 @@
 """
 
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, simpledialog
 import cv2
 from PIL import Image, ImageTk
 import threading
 import time
 import signal
 import sys
+import json
+import os
+import numpy as np
 
 from camera_control import StCameraControl
 from image_processing import detect_wrinkles, draw_result_on_image, detect_bottle_with_yolo, extract_bottle_mask, create_filled_bottle_image
@@ -37,8 +40,9 @@ class WrinkleDetectionApp:
         self.last_capture_time = 0  # 最後に撮影した時刻
         self.bottle_detected = False  # 現在ボトルが検出されているか
 
-        # 現在のフレーム（CLAHE適用済み）
-        self.current_frame_corrected = None
+        # 現在のフレーム
+        self.current_frame_original = None  # オリジナル画像
+        self.current_frame_corrected = None  # プリセット適用後（保存用）
 
         # CLAHEパラメータ
         self.clahe_clip_limit = tk.DoubleVar(value=DATASET_SETTINGS['clahe_clip_limit'])
@@ -51,7 +55,11 @@ class WrinkleDetectionApp:
         self.param_black_level = tk.IntVar(value=0)
         self.param_wb_red = tk.DoubleVar(value=1.0)
         self.param_wb_blue = tk.DoubleVar(value=1.0)
-        self.bayer_pattern = tk.StringVar(value="RG")  # BayerRG12センサー
+        self.param_highlight_comp = tk.DoubleVar(value=1.0)  # 1.0=圧縮なし
+        self.param_saturation = tk.DoubleVar(value=1.0)  # 1.0=フルカラー
+        self.adaptive_processing = tk.BooleanVar(value=False)  # 適応的処理OFF
+        self.rotation_angle = tk.IntVar(value=0)  # 回転角度
+        self.bayer_pattern = tk.StringVar(value="BG")  # 正常動作するパターン
 
         # 統計情報
         self.total_count = 0
@@ -60,6 +68,34 @@ class WrinkleDetectionApp:
 
         # 利用可能なカメラリスト
         self.available_cameras = []
+
+        # カメラの基準パラメータ（起動時の値を記録）
+        self.base_exposure = CAMERA_SETTINGS['exposure_time']
+        self.base_gain = CAMERA_SETTINGS['gain']
+
+        # プリセット管理
+        self.preset_file = "presets.json"
+        self.presets = self.load_presets()
+
+        # 自動プリセット切り替え（4段階）
+        self.auto_preset_enabled = tk.BooleanVar(value=False)  # 自動切り替えON/OFF
+        self.auto_preset_config_file = "auto_preset_config.json"
+
+        # 4段階の閾値とプリセット
+        self.threshold1 = tk.IntVar(value=60)   # 範囲1と2の境界
+        self.threshold2 = tk.IntVar(value=100)  # 範囲2と3の境界
+        self.threshold3 = tk.IntVar(value=140)  # 範囲3と4の境界
+        self.preset_range1 = tk.IntVar(value=0)  # 最暗（0～閾値1）
+        self.preset_range2 = tk.IntVar(value=1)  # 暗（閾値1～閾値2）
+        self.preset_range3 = tk.IntVar(value=2)  # 明（閾値2～閾値3）
+        self.preset_range4 = tk.IntVar(value=3)  # 最明（閾値3～255）
+
+        self.luminance_hysteresis = tk.IntVar(value=10)  # ヒステリシス幅（パタパタ防止）
+        self.current_auto_preset = None  # 現在適用中のプリセット番号
+        self.current_range = None  # 現在の輝度範囲（1-4）
+
+        # 設定を読み込み
+        self.load_auto_preset_config()
 
         # ディレクトリとログファイルの初期化
         ensure_directories()
@@ -81,16 +117,50 @@ class WrinkleDetectionApp:
         main_frame = ttk.Frame(self.root, padding="10")
         main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
 
-        # 左側: カメラプレビュー
-        preview_frame = ttk.LabelFrame(main_frame, text="カメラプレビュー", padding="10")
-        preview_frame.grid(row=0, column=0, rowspan=3, padx=5, pady=5, sticky=(tk.N, tk.S))
+        # 左側: カメラプレビュー（2画面）
+        preview_container = ttk.Frame(main_frame)
+        preview_container.grid(row=0, column=0, rowspan=3, padx=5, pady=5, sticky=(tk.N, tk.S))
 
-        self.preview_label = ttk.Label(preview_frame)
-        self.preview_label.pack()
+        # 左：オリジナル画像（YOLO検出用）
+        original_preview_frame = ttk.LabelFrame(preview_container, text="オリジナル画像（YOLO検出）", padding="10")
+        original_preview_frame.grid(row=0, column=0, padx=5, pady=5)
+        self.original_preview_label = ttk.Label(original_preview_frame)
+        self.original_preview_label.pack()
 
-        # 右上: カメラ制御
-        camera_control_frame = ttk.LabelFrame(main_frame, text="カメラ制御", padding="10")
-        camera_control_frame.grid(row=0, column=1, padx=5, pady=5, sticky=(tk.W, tk.E))
+        # 右：プリセット適用後の画像
+        preset_preview_frame = ttk.LabelFrame(preview_container, text="プリセット適用後", padding="10")
+        preset_preview_frame.grid(row=0, column=1, padx=5, pady=5)
+        self.preset_preview_label = ttk.Label(preset_preview_frame)
+        self.preset_preview_label.pack()
+
+        # 右側: スクロール可能なコントロールエリア
+        right_frame = ttk.Frame(main_frame)
+        right_frame.grid(row=0, column=1, rowspan=3, padx=5, pady=5, sticky=(tk.N, tk.S, tk.E, tk.W))
+
+        # スクロールバー付きキャンバス
+        canvas = tk.Canvas(right_frame, width=500, height=800)
+        scrollbar = ttk.Scrollbar(right_frame, orient=tk.VERTICAL, command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=scrollable_frame, anchor=tk.NW)
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # マウスホイールでスクロール
+        def on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        canvas.bind_all("<MouseWheel>", on_mousewheel)
+
+        # カメラ制御フレーム（scrollable_frame内に配置）
+        camera_control_frame = ttk.LabelFrame(scrollable_frame, text="カメラ制御", padding="10")
+        camera_control_frame.grid(row=0, column=0, padx=5, pady=5, sticky=(tk.W, tk.E))
 
         # カメラ選択
         ttk.Label(camera_control_frame, text="カメラ:").grid(row=0, column=0, sticky=tk.W, pady=5)
@@ -108,57 +178,188 @@ class WrinkleDetectionApp:
         self.rescan_button = ttk.Button(camera_control_frame, text="再検出", command=self.scan_cameras)
         self.rescan_button.grid(row=0, column=3, padx=5, pady=5)
 
+        # 画像回転選択
+        rotation_frame = ttk.LabelFrame(camera_control_frame, text="画像回転", padding="5")
+        rotation_frame.grid(row=1, column=0, columnspan=4, pady=5, sticky=(tk.W, tk.E))
+
+        ttk.Radiobutton(rotation_frame, text="0度", variable=self.rotation_angle,
+                       value=0, command=self.on_rotation_change).pack(side=tk.LEFT, padx=5)
+        ttk.Radiobutton(rotation_frame, text="90度", variable=self.rotation_angle,
+                       value=90, command=self.on_rotation_change).pack(side=tk.LEFT, padx=5)
+        ttk.Radiobutton(rotation_frame, text="180度", variable=self.rotation_angle,
+                       value=180, command=self.on_rotation_change).pack(side=tk.LEFT, padx=5)
+        ttk.Radiobutton(rotation_frame, text="270度", variable=self.rotation_angle,
+                       value=270, command=self.on_rotation_change).pack(side=tk.LEFT, padx=5)
+
         # モード切り替えボタン
-        mode_button_frame = ttk.Frame(camera_control_frame)
-        mode_button_frame.grid(row=1, column=0, columnspan=4, pady=10)
+        mode_button_frame = ttk.LabelFrame(camera_control_frame, text="撮影モード", padding="5")
+        mode_button_frame.grid(row=2, column=0, columnspan=4, pady=5, sticky=(tk.W, tk.E))
 
         ttk.Button(mode_button_frame, text="通常モード", command=self.set_normal_mode).pack(side=tk.LEFT, padx=5)
         ttk.Button(mode_button_frame, text="ブレ防止モード", command=self.set_fast_mode).pack(side=tk.LEFT, padx=5)
 
+        # プリセットボタン（5つ）
+        preset_button_frame = ttk.LabelFrame(camera_control_frame, text="プリセット", padding="5")
+        preset_button_frame.grid(row=3, column=0, columnspan=4, pady=5, sticky=(tk.W, tk.E))
+
+        # プリセット名とボタンを格納
+        self.preset_labels = []
+
+        for i in range(5):
+            # プリセット名（クリックで編集可能）
+            preset_name = self.presets[i].get('name', f'プリセット{i+1}')
+            label = ttk.Label(preset_button_frame, text=preset_name, width=12,
+                            relief=tk.RIDGE, cursor="hand2", anchor=tk.CENTER)
+            label.grid(row=0, column=i*3, padx=2, pady=2)
+            label.bind('<Double-Button-1>', lambda e, idx=i: self.rename_preset(idx))
+            self.preset_labels.append(label)
+
+            # 読み込みボタン
+            load_btn = ttk.Button(preset_button_frame, text="読込", width=5,
+                                 command=lambda idx=i: self.load_preset(idx))
+            load_btn.grid(row=1, column=i*3, padx=2, pady=2)
+
+            # 保存ボタン
+            save_btn = ttk.Button(preset_button_frame, text="保存", width=5,
+                                 command=lambda idx=i: self.save_preset(idx))
+            save_btn.grid(row=2, column=i*3, padx=2, pady=2)
+
+        # 自動プリセット切り替え（4段階）
+        auto_preset_frame = ttk.LabelFrame(camera_control_frame, text="自動プリセット切り替え（4段階）", padding="5")
+        auto_preset_frame.grid(row=4, column=0, columnspan=4, pady=5, sticky=(tk.W, tk.E))
+
+        # 自動切り替えON/OFF
+        self.auto_preset_check = ttk.Checkbutton(auto_preset_frame, text="自動切り替えを有効化",
+                                                 variable=self.auto_preset_enabled)
+        self.auto_preset_check.grid(row=0, column=0, columnspan=4, padx=5, pady=2, sticky=tk.W)
+
+        # 4段階の設定
+        preset_names = [self.presets[i].get('name', f'プリセット{i+1}') for i in range(5)]
+
+        # 範囲1（0～閾値1）
+        ttk.Label(auto_preset_frame, text="範囲1（最暗）:").grid(row=1, column=0, sticky=tk.W, padx=5)
+        self.preset_range1_combo = ttk.Combobox(auto_preset_frame, textvariable=self.preset_range1,
+                                               values=list(range(5)), state='readonly', width=5)
+        self.preset_range1_combo.grid(row=1, column=1, padx=5, pady=2)
+        self.preset_range1_label = ttk.Label(auto_preset_frame, text=preset_names[0], width=12)
+        self.preset_range1_label.grid(row=1, column=2, padx=5, pady=2)
+
+        # 閾値1スライダー
+        ttk.Label(auto_preset_frame, text="閾値1:").grid(row=2, column=0, sticky=tk.W, padx=5)
+        self.threshold1_scale = ttk.Scale(auto_preset_frame, from_=0, to=255,
+                                         variable=self.threshold1, orient=tk.HORIZONTAL, length=100)
+        self.threshold1_scale.grid(row=2, column=1, padx=5, pady=2)
+        self.threshold1_label = ttk.Label(auto_preset_frame, text=f"{self.threshold1.get()}")
+        self.threshold1_label.grid(row=2, column=2, padx=5)
+        self.threshold1.trace_add('write', lambda *args: self.threshold1_label.config(text=f"{self.threshold1.get()}"))
+
+        # 範囲2（閾値1～閾値2）
+        ttk.Label(auto_preset_frame, text="範囲2（暗）:").grid(row=3, column=0, sticky=tk.W, padx=5)
+        self.preset_range2_combo = ttk.Combobox(auto_preset_frame, textvariable=self.preset_range2,
+                                               values=list(range(5)), state='readonly', width=5)
+        self.preset_range2_combo.grid(row=3, column=1, padx=5, pady=2)
+        self.preset_range2_label = ttk.Label(auto_preset_frame, text=preset_names[1], width=12)
+        self.preset_range2_label.grid(row=3, column=2, padx=5, pady=2)
+
+        # 閾値2スライダー
+        ttk.Label(auto_preset_frame, text="閾値2:").grid(row=4, column=0, sticky=tk.W, padx=5)
+        self.threshold2_scale = ttk.Scale(auto_preset_frame, from_=0, to=255,
+                                         variable=self.threshold2, orient=tk.HORIZONTAL, length=100)
+        self.threshold2_scale.grid(row=4, column=1, padx=5, pady=2)
+        self.threshold2_label = ttk.Label(auto_preset_frame, text=f"{self.threshold2.get()}")
+        self.threshold2_label.grid(row=4, column=2, padx=5)
+        self.threshold2.trace_add('write', lambda *args: self.threshold2_label.config(text=f"{self.threshold2.get()}"))
+
+        # 範囲3（閾値2～閾値3）
+        ttk.Label(auto_preset_frame, text="範囲3（明）:").grid(row=5, column=0, sticky=tk.W, padx=5)
+        self.preset_range3_combo = ttk.Combobox(auto_preset_frame, textvariable=self.preset_range3,
+                                               values=list(range(5)), state='readonly', width=5)
+        self.preset_range3_combo.grid(row=5, column=1, padx=5, pady=2)
+        self.preset_range3_label = ttk.Label(auto_preset_frame, text=preset_names[2], width=12)
+        self.preset_range3_label.grid(row=5, column=2, padx=5, pady=2)
+
+        # 閾値3スライダー
+        ttk.Label(auto_preset_frame, text="閾値3:").grid(row=6, column=0, sticky=tk.W, padx=5)
+        self.threshold3_scale = ttk.Scale(auto_preset_frame, from_=0, to=255,
+                                         variable=self.threshold3, orient=tk.HORIZONTAL, length=100)
+        self.threshold3_scale.grid(row=6, column=1, padx=5, pady=2)
+        self.threshold3_label = ttk.Label(auto_preset_frame, text=f"{self.threshold3.get()}")
+        self.threshold3_label.grid(row=6, column=2, padx=5)
+        self.threshold3.trace_add('write', lambda *args: self.threshold3_label.config(text=f"{self.threshold3.get()}"))
+
+        # 範囲4（閾値3～255）
+        ttk.Label(auto_preset_frame, text="範囲4（最明）:").grid(row=7, column=0, sticky=tk.W, padx=5)
+        self.preset_range4_combo = ttk.Combobox(auto_preset_frame, textvariable=self.preset_range4,
+                                               values=list(range(5)), state='readonly', width=5)
+        self.preset_range4_combo.grid(row=7, column=1, padx=5, pady=2)
+        self.preset_range4_label = ttk.Label(auto_preset_frame, text=preset_names[3], width=12)
+        self.preset_range4_label.grid(row=7, column=2, padx=5, pady=2)
+
+        # ヒステリシス幅スライダー（パタパタ防止）
+        ttk.Label(auto_preset_frame, text="ヒステリシス:").grid(row=8, column=0, sticky=tk.W, padx=5)
+        self.luminance_hysteresis_scale = ttk.Scale(auto_preset_frame, from_=0, to=50,
+                                                    variable=self.luminance_hysteresis,
+                                                    orient=tk.HORIZONTAL, length=100)
+        self.luminance_hysteresis_scale.grid(row=8, column=1, padx=5, pady=2)
+        self.luminance_hysteresis_label = ttk.Label(auto_preset_frame, text=f"{self.luminance_hysteresis.get()}")
+        self.luminance_hysteresis_label.grid(row=8, column=2, padx=5)
+        self.luminance_hysteresis.trace_add('write', lambda *args: self.luminance_hysteresis_label.config(text=f"{self.luminance_hysteresis.get()}"))
+
+        # 設定保存ボタン
+        ttk.Button(auto_preset_frame, text="設定を保存", command=self.save_auto_preset_config).grid(row=9, column=0, columnspan=3, padx=5, pady=5, sticky=(tk.W, tk.E))
+
+        # 現在選択中のプリセット表示
+        ttk.Label(auto_preset_frame, text="現在選択中:").grid(row=10, column=0, sticky=tk.W, padx=5)
+        self.current_preset_display = ttk.Label(auto_preset_frame, text="なし",
+                                               font=('Arial', 10, 'bold'), foreground="blue")
+        self.current_preset_display.grid(row=10, column=1, columnspan=2, padx=5, pady=2, sticky=tk.W)
+
+        # プリセット選択変更時にラベルを更新
+        self.preset_range1.trace_add('write', self.update_auto_preset_labels)
+        self.preset_range2.trace_add('write', self.update_auto_preset_labels)
+        self.preset_range3.trace_add('write', self.update_auto_preset_labels)
+        self.preset_range4.trace_add('write', self.update_auto_preset_labels)
+
         # カメラ起動/停止ボタン
         self.start_button = ttk.Button(camera_control_frame, text="カメラ起動", command=self.start_camera)
-        self.start_button.grid(row=2, column=0, columnspan=2, padx=5, pady=5, sticky=(tk.W, tk.E))
+        self.start_button.grid(row=5, column=0, columnspan=2, padx=5, pady=5, sticky=(tk.W, tk.E))
 
         self.stop_button = ttk.Button(camera_control_frame, text="カメラ停止", command=self.stop_camera, state=tk.DISABLED)
-        self.stop_button.grid(row=2, column=2, columnspan=2, padx=5, pady=5, sticky=(tk.W, tk.E))
+        self.stop_button.grid(row=5, column=2, columnspan=2, padx=5, pady=5, sticky=(tk.W, tk.E))
 
         # CLAHE調整スライダー
         clahe_frame = ttk.LabelFrame(camera_control_frame, text="CLAHE調整（白飛び・黒つぶれ対策）", padding="5")
-        clahe_frame.grid(row=3, column=0, columnspan=4, pady=5, sticky=(tk.W, tk.E))
+        clahe_frame.grid(row=6, column=0, columnspan=4, pady=5, sticky=(tk.W, tk.E))
 
-        ttk.Label(clahe_frame, text="クリップ限界:").grid(row=0, column=0, sticky=tk.W, padx=5)
+        # CLAHEリセットボタン
+        ttk.Button(clahe_frame, text="デフォルトに戻す",
+                  command=self.reset_clahe_params).grid(row=0, column=3, padx=5, pady=2, sticky=tk.E)
+
+        ttk.Label(clahe_frame, text="クリップ限界:").grid(row=1, column=0, sticky=tk.W, padx=5)
         self.clahe_clip_scale = ttk.Scale(clahe_frame, from_=0.5, to=4.0,
                                          variable=self.clahe_clip_limit,
                                          orient=tk.HORIZONTAL, length=150)
-        self.clahe_clip_scale.grid(row=0, column=1, padx=5, pady=2)
+        self.clahe_clip_scale.grid(row=1, column=1, padx=5, pady=2)
         self.clahe_clip_label = ttk.Label(clahe_frame, text=f"{self.clahe_clip_limit.get():.1f}")
-        self.clahe_clip_label.grid(row=0, column=2, padx=5)
+        self.clahe_clip_label.grid(row=1, column=2, padx=5)
         self.clahe_clip_limit.trace_add('write', lambda *args: self.clahe_clip_label.config(text=f"{self.clahe_clip_limit.get():.1f}"))
 
-        ttk.Label(clahe_frame, text="タイルサイズ:").grid(row=1, column=0, sticky=tk.W, padx=5)
+        ttk.Label(clahe_frame, text="タイルサイズ:").grid(row=2, column=0, sticky=tk.W, padx=5)
         self.clahe_tile_scale = ttk.Scale(clahe_frame, from_=2, to=16,
                                          variable=self.clahe_tile_size,
                                          orient=tk.HORIZONTAL, length=150)
-        self.clahe_tile_scale.grid(row=1, column=1, padx=5, pady=2)
+        self.clahe_tile_scale.grid(row=2, column=1, padx=5, pady=2)
         self.clahe_tile_label = ttk.Label(clahe_frame, text=f"{self.clahe_tile_size.get()}")
-        self.clahe_tile_label.grid(row=1, column=2, padx=5)
+        self.clahe_tile_label.grid(row=2, column=2, padx=5)
         self.clahe_tile_size.trace_add('write', lambda *args: self.clahe_tile_label.config(text=f"{self.clahe_tile_size.get()}"))
 
         # カメラパラメータ調整スライダー
         camera_param_frame = ttk.LabelFrame(camera_control_frame, text="カメラパラメータ調整", padding="5")
-        camera_param_frame.grid(row=4, column=0, columnspan=4, pady=5, sticky=(tk.W, tk.E))
+        camera_param_frame.grid(row=7, column=0, columnspan=4, pady=5, sticky=(tk.W, tk.E))
 
         # リセットボタン
         ttk.Button(camera_param_frame, text="デフォルトに戻す",
-                  command=self.reset_camera_params).grid(row=0, column=3, padx=5, pady=2, sticky=tk.E)
-
-        # Bayerパターン選択
-        ttk.Label(camera_param_frame, text="Bayerパターン:").grid(row=0, column=0, sticky=tk.W, padx=5)
-        bayer_combo = ttk.Combobox(camera_param_frame, textvariable=self.bayer_pattern,
-                                  values=["BG", "GB", "RG", "GR"],
-                                  state='readonly', width=5)
-        bayer_combo.grid(row=0, column=1, sticky=tk.W, padx=5, pady=2)
-        bayer_combo.bind('<<ComboboxSelected>>', self.on_bayer_change)
+                  command=self.reset_camera_params).grid(row=0, column=0, columnspan=3, padx=5, pady=5, sticky=tk.E)
 
         # 露出時間
         ttk.Label(camera_param_frame, text="露出時間:").grid(row=1, column=0, sticky=tk.W, padx=5)
@@ -200,9 +401,9 @@ class WrinkleDetectionApp:
         self.black_level_label = ttk.Label(camera_param_frame, text=f"{self.param_black_level.get()}")
         self.black_level_label.grid(row=4, column=2, padx=5)
 
-        # ホワイトバランス（赤）
-        ttk.Label(camera_param_frame, text="WB 赤:").grid(row=5, column=0, sticky=tk.W, padx=5)
-        self.wb_red_scale = ttk.Scale(camera_param_frame, from_=0.5, to=2.0,
+        # ホワイトバランス（赤）- ソフトウェア処理
+        ttk.Label(camera_param_frame, text="WB 赤(SW):").grid(row=5, column=0, sticky=tk.W, padx=5)
+        self.wb_red_scale = ttk.Scale(camera_param_frame, from_=0.5, to=4.0,
                                      variable=self.param_wb_red,
                                      orient=tk.HORIZONTAL, length=150,
                                      command=self.on_camera_param_change)
@@ -210,9 +411,9 @@ class WrinkleDetectionApp:
         self.wb_red_label = ttk.Label(camera_param_frame, text=f"{self.param_wb_red.get():.2f}")
         self.wb_red_label.grid(row=5, column=2, padx=5)
 
-        # ホワイトバランス（青）
-        ttk.Label(camera_param_frame, text="WB 青:").grid(row=6, column=0, sticky=tk.W, padx=5)
-        self.wb_blue_scale = ttk.Scale(camera_param_frame, from_=0.5, to=2.0,
+        # ホワイトバランス（青）- ソフトウェア処理
+        ttk.Label(camera_param_frame, text="WB 青(SW):").grid(row=6, column=0, sticky=tk.W, padx=5)
+        self.wb_blue_scale = ttk.Scale(camera_param_frame, from_=0.5, to=4.0,
                                       variable=self.param_wb_blue,
                                       orient=tk.HORIZONTAL, length=150,
                                       command=self.on_camera_param_change)
@@ -220,9 +421,34 @@ class WrinkleDetectionApp:
         self.wb_blue_label = ttk.Label(camera_param_frame, text=f"{self.param_wb_blue.get():.2f}")
         self.wb_blue_label.grid(row=6, column=2, padx=5)
 
-        # データ収集フレーム
-        control_frame = ttk.LabelFrame(main_frame, text="データ収集", padding="10")
-        control_frame.grid(row=1, column=1, padx=5, pady=5, sticky=(tk.W, tk.E, tk.N))
+        # ハイライト圧縮（白飛び抑制）
+        ttk.Label(camera_param_frame, text="ハイライト圧縮:").grid(row=7, column=0, sticky=tk.W, padx=5)
+        self.highlight_comp_scale = ttk.Scale(camera_param_frame, from_=0.0, to=1.0,
+                                             variable=self.param_highlight_comp,
+                                             orient=tk.HORIZONTAL, length=150,
+                                             command=self.on_camera_param_change)
+        self.highlight_comp_scale.grid(row=7, column=1, padx=5, pady=2)
+        self.highlight_comp_label = ttk.Label(camera_param_frame, text=f"{self.param_highlight_comp.get():.2f}")
+        self.highlight_comp_label.grid(row=7, column=2, padx=5)
+
+        # 彩度調整
+        ttk.Label(camera_param_frame, text="彩度:").grid(row=8, column=0, sticky=tk.W, padx=5)
+        self.saturation_scale = ttk.Scale(camera_param_frame, from_=0.0, to=1.0,
+                                         variable=self.param_saturation,
+                                         orient=tk.HORIZONTAL, length=150,
+                                         command=self.on_camera_param_change)
+        self.saturation_scale.grid(row=8, column=1, padx=5, pady=2)
+        self.saturation_label = ttk.Label(camera_param_frame, text=f"{self.param_saturation.get():.2f}")
+        self.saturation_label.grid(row=8, column=2, padx=5)
+
+        # 適応的処理
+        adaptive_check = ttk.Checkbutton(camera_param_frame, text="適応的処理（明暗領域を自動調整）",
+                                        variable=self.adaptive_processing)
+        adaptive_check.grid(row=9, column=0, columnspan=3, padx=5, pady=5, sticky=tk.W)
+
+        # データ収集フレーム（scrollable_frame内に配置）
+        control_frame = ttk.LabelFrame(scrollable_frame, text="データ収集", padding="10")
+        control_frame.grid(row=1, column=0, padx=5, pady=5, sticky=(tk.W, tk.E, tk.N))
 
         # 手動撮影ボタン
         manual_frame = ttk.LabelFrame(control_frame, text="手動撮影", padding="10")
@@ -305,7 +531,10 @@ class WrinkleDetectionApp:
             self.camera.set_gain(self.param_gain.get())
             self.camera.set_digital_gain(self.param_digital_gain.get())
             self.camera.set_black_level(self.param_black_level.get())
-            self.camera.set_white_balance(self.param_wb_red.get(), self.param_wb_blue.get())
+            self.camera.set_white_balance(self.param_wb_red.get(), self.param_wb_blue.get())  # ソフトウェア処理
+            self.camera.set_highlight_compression(self.param_highlight_comp.get())
+            self.camera.set_saturation(self.param_saturation.get())
+            self.camera.set_rotation(self.rotation_angle.get())
 
             # ボタン状態変更
             self.start_button.config(state=tk.DISABLED)
@@ -346,65 +575,202 @@ class WrinkleDetectionApp:
         # messagebox.showinfo("成功", "カメラを停止しました")
 
     def preview_loop(self):
-        """プレビューループ（別スレッド）"""
+        """プレビューループ（別スレッド）- 2画面表示"""
         while self.is_running:
             frame = self.camera.capture_frame()
 
             if frame is not None:
-                # デバッグ: 元の画像の色を確認
-                # print(f"元画像の平均色 B:{frame[:,:,0].mean():.1f} G:{frame[:,:,1].mean():.1f} R:{frame[:,:,2].mean():.1f}")
+                # オリジナル画像を保存
+                self.current_frame_original = frame.copy()
 
-                # CLAHE（適応的ヒストグラム平坦化）を適用
-                # 白いラベルと黒いラベルの両方でシワが見えるように補正
-                # スライダーの値を使って動的に調整
+                # YOLOでボトル検出（オリジナル画像で高精度検出）
+                yolo_boxes = []
+                try:
+                    yolo_boxes, _ = detect_bottle_with_yolo(frame)
+                except:
+                    pass
+
+                # 自動プリセット切り替え（UIの値のみ変更、カメラには適用しない）
+                if self.auto_preset_enabled.get() and yolo_boxes and len(yolo_boxes) > 0:
+                    # ボトル領域の平均輝度を計算
+                    x1, y1, x2, y2 = yolo_boxes[0]  # 最初のボトルを使用
+                    bottle_region = frame[y1:y2, x1:x2]
+
+                    # LAB色空間でL（輝度）チャンネルの平均値を計算
+                    lab = cv2.cvtColor(bottle_region, cv2.COLOR_BGR2LAB)
+                    avg_luminance = np.mean(lab[:, :, 0])
+
+                    # 4段階切り替え用の閾値とヒステリシスを取得
+                    threshold1 = self.threshold1.get()
+                    threshold2 = self.threshold2.get()
+                    threshold3 = self.threshold3.get()
+                    hysteresis = self.luminance_hysteresis.get()
+
+                    # デバッグ: 輝度値を常に表示
+                    print(f"[DEBUG] 輝度: {avg_luminance:.1f}, 閾値1: {threshold1}, 閾値2: {threshold2}, 閾値3: {threshold3}, ヒステリシス: {hysteresis}, 現在の状態: {self.current_range}")
+
+                    # 新しい範囲を判定
+                    new_range = None
+                    if self.current_range is None:
+                        # 初回は単純な閾値比較
+                        if avg_luminance < threshold1:
+                            new_range = "range1"
+                            print(f"[DEBUG] 初回判定 → range1 (輝度 {avg_luminance:.1f} < 閾値1 {threshold1})")
+                        elif avg_luminance < threshold2:
+                            new_range = "range2"
+                            print(f"[DEBUG] 初回判定 → range2 (輝度 {avg_luminance:.1f} < 閾値2 {threshold2})")
+                        elif avg_luminance < threshold3:
+                            new_range = "range3"
+                            print(f"[DEBUG] 初回判定 → range3 (輝度 {avg_luminance:.1f} < 閾値3 {threshold3})")
+                        else:
+                            new_range = "range4"
+                            print(f"[DEBUG] 初回判定 → range4 (輝度 {avg_luminance:.1f} >= 閾値3 {threshold3})")
+                    else:
+                        # ヒステリシスを使った判定（現在の範囲に応じて切り替え閾値を調整）
+                        if self.current_range == "range1":
+                            # 範囲1 → 範囲2への切り替えのみ可能
+                            if avg_luminance >= threshold1 + hysteresis:
+                                new_range = "range2"
+                                print(f"[DEBUG] range1 → range2 切り替え (輝度 {avg_luminance:.1f} >= {threshold1 + hysteresis})")
+                            else:
+                                new_range = "range1"
+                                print(f"[DEBUG] range1 維持 (輝度 {avg_luminance:.1f} < {threshold1 + hysteresis})")
+                        elif self.current_range == "range2":
+                            # 範囲2 → 範囲1 または 範囲3への切り替えが可能
+                            if avg_luminance < threshold1 - hysteresis:
+                                new_range = "range1"
+                                print(f"[DEBUG] range2 → range1 切り替え (輝度 {avg_luminance:.1f} < {threshold1 - hysteresis})")
+                            elif avg_luminance >= threshold2 + hysteresis:
+                                new_range = "range3"
+                                print(f"[DEBUG] range2 → range3 切り替え (輝度 {avg_luminance:.1f} >= {threshold2 + hysteresis})")
+                            else:
+                                new_range = "range2"
+                                print(f"[DEBUG] range2 維持 (輝度 {avg_luminance:.1f})")
+                        elif self.current_range == "range3":
+                            # 範囲3 → 範囲2 または 範囲4への切り替えが可能
+                            if avg_luminance < threshold2 - hysteresis:
+                                new_range = "range2"
+                                print(f"[DEBUG] range3 → range2 切り替え (輝度 {avg_luminance:.1f} < {threshold2 - hysteresis})")
+                            elif avg_luminance >= threshold3 + hysteresis:
+                                new_range = "range4"
+                                print(f"[DEBUG] range3 → range4 切り替え (輝度 {avg_luminance:.1f} >= {threshold3 + hysteresis})")
+                            else:
+                                new_range = "range3"
+                                print(f"[DEBUG] range3 維持 (輝度 {avg_luminance:.1f})")
+                        elif self.current_range == "range4":
+                            # 範囲4 → 範囲3への切り替えのみ可能
+                            if avg_luminance < threshold3 - hysteresis:
+                                new_range = "range3"
+                                print(f"[DEBUG] range4 → range3 切り替え (輝度 {avg_luminance:.1f} < {threshold3 - hysteresis})")
+                            else:
+                                new_range = "range4"
+                                print(f"[DEBUG] range4 維持 (輝度 {avg_luminance:.1f} >= {threshold3 - hysteresis})")
+
+                    # プリセットを選択
+                    if new_range == "range1":
+                        selected_preset_idx = self.preset_range1.get()
+                        range_display = "範囲1（最暗）"
+                    elif new_range == "range2":
+                        selected_preset_idx = self.preset_range2.get()
+                        range_display = "範囲2（暗）"
+                    elif new_range == "range3":
+                        selected_preset_idx = self.preset_range3.get()
+                        range_display = "範囲3（明）"
+                    else:  # range4
+                        selected_preset_idx = self.preset_range4.get()
+                        range_display = "範囲4（最明）"
+
+                    preset_name = self.presets[selected_preset_idx].get('name', f'プリセット{selected_preset_idx+1}')
+
+                    # 現在のプリセット表示を常に更新（輝度をリアルタイム表示）
+                    self.current_preset_display.config(text=f"{preset_name} (輝度: {avg_luminance:.1f}, {range_display})")
+
+                    # 範囲が変わった場合のみUIパラメータを更新（カメラには適用しない）
+                    if new_range != self.current_range:
+                        self.current_range = new_range
+                        self.current_auto_preset = selected_preset_idx
+
+                        # プリセットのパラメータを取得してUIの値を更新（カメラ設定は変更しない）
+                        params = self.presets[selected_preset_idx].get('params', {})
+                        if params:
+                            # UIの値のみ更新
+                            self.param_exposure.set(params.get('exposure', CAMERA_SETTINGS['exposure_time']))
+                            self.param_gain.set(params.get('gain', CAMERA_SETTINGS['gain']))
+                            self.param_digital_gain.set(params.get('digital_gain', 1.0))
+                            self.param_black_level.set(params.get('black_level', 0))
+                            self.param_wb_red.set(params.get('wb_red', 1.0))
+                            self.param_wb_blue.set(params.get('wb_blue', 1.0))
+                            self.param_highlight_comp.set(params.get('highlight_comp', 1.0))
+                            self.param_saturation.set(params.get('saturation', 1.0))
+                            self.clahe_clip_limit.set(params.get('clahe_clip', DATASET_SETTINGS['clahe_clip_limit']))
+                            self.clahe_tile_size.set(params.get('clahe_tile', DATASET_SETTINGS['clahe_tile_size']))
+                            print(f"★自動切り替え実行: {preset_name} (平均輝度: {avg_luminance:.1f}, {range_display})")
+                        else:
+                            print(f"警告: プリセット '{preset_name}' にパラメータが保存されていません")
+
+                # === 左側：オリジナル画像の表示 ===
+                original_display = frame.copy()
+                # バウンディングボックスを描画
+                for box in yolo_boxes:
+                    x1, y1, x2, y2 = box
+                    cv2.rectangle(original_display, (x1, y1), (x2, y2), (0, 255, 255), 3)
+
+                # リサイズして表示
+                original_display = resize_for_display(
+                    original_display,
+                    GUI_SETTINGS['preview_width'] // 2,  # 幅を半分に
+                    GUI_SETTINGS['preview_height']
+                )
+                rgb_original = cv2.cvtColor(original_display, cv2.COLOR_BGR2RGB)
+                pil_original = Image.fromarray(rgb_original)
+                photo_original = ImageTk.PhotoImage(image=pil_original)
+                self.original_preview_label.config(image=photo_original)
+                self.original_preview_label.image = photo_original
+
+                # === 右側：プリセット適用後の画像 ===
+                # まずソフトウェア処理を適用（ホワイトバランス、ハイライト圧縮、彩度）
+                frame_processed = self.apply_software_processing(frame.copy())
+
+                # 次にCLAHE等を適用
                 clip_limit = self.clahe_clip_limit.get()
                 tile_size = int(self.clahe_tile_size.get())
 
+                # 適応的処理が有効な場合
+                if self.adaptive_processing.get():
+                    frame_corrected = self.apply_adaptive_processing(frame_processed, clip_limit, tile_size)
                 # CLAHEを適用する場合
-                if DATASET_SETTINGS.get('use_clahe', True):
+                elif DATASET_SETTINGS.get('use_clahe', True):
                     clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(tile_size, tile_size))
-
-                    # L*a*b*色空間でCLAHE適用
-                    lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+                    lab = cv2.cvtColor(frame_processed, cv2.COLOR_BGR2LAB)
                     lab[:, :, 0] = clahe.apply(lab[:, :, 0])
                     frame_corrected = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
                 else:
-                    frame_corrected = frame.copy()
+                    frame_corrected = frame_processed.copy()
 
-                # デバッグ: CLAHE後の画像の色を確認
-                # print(f"CLAHE後の平均色 B:{frame_corrected[:,:,0].mean():.1f} G:{frame_corrected[:,:,1].mean():.1f} R:{frame_corrected[:,:,2].mean():.1f}")
-
-                # 現在のフレームを保存（手動保存時に使用）
+                # 保存用にフレームを保持
                 self.current_frame_corrected = frame_corrected
 
-                # YOLOでボトル検出（CLAHE適用後の画像で）
-                try:
-                    yolo_boxes, display_frame = detect_bottle_with_yolo(frame_corrected)
+                # バウンディングボックスを描画
+                preset_display = frame_corrected.copy()
+                for box in yolo_boxes:
+                    x1, y1, x2, y2 = box
+                    cv2.rectangle(preset_display, (x1, y1), (x2, y2), (0, 255, 255), 3)
 
-                    # 自動撮影モードの処理（CLAHE適用後の画像を保存）
-                    if self.auto_capture_running:
-                        self.auto_capture_process(frame_corrected, yolo_boxes)
-                except:
-                    # YOLO失敗時は補正済み画像を使用
-                    display_frame = frame_corrected
+                # 自動撮影モードの処理（プリセット適用後の画像を保存）
+                if self.auto_capture_running:
+                    self.auto_capture_process(frame_corrected, yolo_boxes)
 
                 # リサイズして表示
-                display_frame = resize_for_display(
-                    display_frame,
-                    GUI_SETTINGS['preview_width'],
+                preset_display = resize_for_display(
+                    preset_display,
+                    GUI_SETTINGS['preview_width'] // 2,  # 幅を半分に
                     GUI_SETTINGS['preview_height']
                 )
-
-                # BGR → RGB変換
-                rgb_frame = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
-
-                # PIL Image → ImageTk
-                pil_image = Image.fromarray(rgb_frame)
-                photo = ImageTk.PhotoImage(image=pil_image)
-
-                # ラベルに表示
-                self.preview_label.config(image=photo)
-                self.preview_label.image = photo  # 参照を保持
+                rgb_preset = cv2.cvtColor(preset_display, cv2.COLOR_BGR2RGB)
+                pil_preset = Image.fromarray(rgb_preset)
+                photo_preset = ImageTk.PhotoImage(image=pil_preset)
+                self.preset_preview_label.config(image=photo_preset)
+                self.preset_preview_label.image = photo_preset
 
             time.sleep(0.03)  # 約30fps
 
@@ -645,33 +1011,184 @@ class WrinkleDetectionApp:
 
                 # カメラを切り替え
                 if self.camera.switch_camera(camera_index):
-                    # カメラ設定を再適用（スライダーの値）
-                    self.camera.set_exposure(self.param_exposure.get())
-                    self.camera.set_gain(self.param_gain.get())
-                    self.camera.set_digital_gain(self.param_digital_gain.get())
-                    self.camera.set_black_level(self.param_black_level.get())
-                    self.camera.set_white_balance(self.param_wb_red.get(), self.param_wb_blue.get())
+                    # カメラの基本設定のみ適用（回転とBayerパターン）
+                    self.camera.set_rotation(self.rotation_angle.get())
+                    # 露出・ゲイン等は固定値を維持（オリジナル画像用）
                 else:
                     messagebox.showerror("エラー", "カメラの切り替えに失敗しました")
 
     def reset_camera_params(self):
-        """カメラパラメータをデフォルトに戻す"""
+        """カメラパラメータをデフォルトに戻す（UIの値のみ）"""
         self.param_exposure.set(CAMERA_SETTINGS['exposure_time'])
         self.param_gain.set(CAMERA_SETTINGS['gain'])
         self.param_digital_gain.set(1.0)
         self.param_black_level.set(0)
         self.param_wb_red.set(1.0)
         self.param_wb_blue.set(1.0)
-        self.bayer_pattern.set("RG")  # BayerRG12センサーの正しいパターン
+        self.param_highlight_comp.set(1.0)
+        self.param_saturation.set(1.0)
+        # Bayerパターンは"BG"固定（変更不可）
 
-    def on_bayer_change(self, event):
-        """Bayerパターン変更時のコールバック"""
-        pattern = self.bayer_pattern.get()
-        self.camera.set_bayer_pattern(pattern)
-        print(f"Bayerパターン変更: {pattern}")
+        # 注意：カメラには設定を適用しない（オリジナル画像は固定パラメータで取得）
+        # UIパラメータは右側のプレビュー（プリセット適用後）に反映される
+
+    def reset_clahe_params(self):
+        """CLAHEパラメータをデフォルトに戻す"""
+        self.clahe_clip_limit.set(DATASET_SETTINGS['clahe_clip_limit'])
+        self.clahe_tile_size.set(DATASET_SETTINGS['clahe_tile_size'])
+
+    def on_rotation_change(self):
+        """回転角度変更時のコールバック"""
+        if self.is_running:
+            self.camera.set_rotation(self.rotation_angle.get())
+            print(f"画像回転: {self.rotation_angle.get()}度")
+
+    def apply_software_processing(self, image_bgr):
+        """
+        ソフトウェア処理を適用（明るさ調整、ホワイトバランス、ハイライト圧縮、彩度）
+
+        Args:
+            image_bgr: 入力画像
+
+        Returns:
+            処理済み画像
+        """
+        # 1. 明るさ調整（露出時間・ゲインのシミュレーション）
+        current_exposure = self.param_exposure.get()
+        current_gain = self.param_gain.get()
+
+        # 露出時間の比率
+        exposure_ratio = current_exposure / self.base_exposure
+
+        # ゲインの比率（dBからリニアへの変換）
+        gain_diff = current_gain - self.base_gain
+        gain_ratio = 10 ** (gain_diff / 20.0)
+
+        # 合計の明るさ倍率
+        brightness_multiplier = exposure_ratio * gain_ratio
+
+        # デバッグ: 明るさ倍率を表示（倍率が大きく変わった時のみ）
+        if not hasattr(self, '_last_brightness_multiplier'):
+            self._last_brightness_multiplier = 1.0
+
+        if abs(brightness_multiplier - self._last_brightness_multiplier) > 0.1:
+            print(f"[明るさ調整] 露出比: {exposure_ratio:.2f}x, ゲイン比: {gain_ratio:.2f}x, 合計: {brightness_multiplier:.2f}x")
+            self._last_brightness_multiplier = brightness_multiplier
+
+        # デジタルゲインを適用
+        if brightness_multiplier != 1.0:
+            image_float = image_bgr.astype(np.float32)
+            image_float *= brightness_multiplier
+            image_bgr = np.clip(image_float, 0, 255).astype(np.uint8)
+
+        # 2. ホワイトバランス
+        wb_red = self.param_wb_red.get()
+        wb_blue = self.param_wb_blue.get()
+
+        if wb_red != 1.0 or wb_blue != 1.0:
+            image_float = image_bgr.astype(np.float32)
+            image_float[:, :, 2] *= wb_red   # Rチャンネル
+            image_float[:, :, 0] *= wb_blue  # Bチャンネル
+            image_bgr = np.clip(image_float, 0, 255).astype(np.uint8)
+
+        # 3. ハイライト圧縮
+        highlight_comp = self.param_highlight_comp.get()
+        if highlight_comp < 1.0:
+            lab = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2LAB)
+            l_channel = lab[:, :, 0].astype(np.float32)
+
+            # 明るい部分（150以上）を圧縮
+            threshold = 150.0
+            max_brightness = 180.0
+            bright_mask = l_channel > threshold
+
+            range_max = threshold + (max_brightness - threshold) + (255 - max_brightness) * highlight_comp
+            compressed = threshold + (l_channel - threshold) * (range_max - threshold) / (255 - threshold)
+            l_channel[bright_mask] = compressed[bright_mask]
+
+            lab[:, :, 0] = np.clip(l_channel, 0, 255).astype(np.uint8)
+            image_bgr = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+
+        # 4. 彩度調整
+        saturation = self.param_saturation.get()
+        if saturation < 1.0:
+            hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV).astype(np.float32)
+            hsv[:, :, 1] *= saturation  # Sチャンネル（彩度）を調整
+            hsv[:, :, 1] = np.clip(hsv[:, :, 1], 0, 255)
+            image_bgr = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+
+        return image_bgr
+
+    def apply_adaptive_processing(self, image_bgr, clip_limit, tile_size):
+        """
+        適応的処理：画像内の明暗領域に応じて異なる処理を適用
+
+        Args:
+            image_bgr: 入力画像
+            clip_limit: CLAHEクリップ限界
+            tile_size: CLAHEタイルサイズ
+
+        Returns:
+            処理済み画像
+        """
+        # 1. 輝度マスクを作成
+        lab = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2LAB)
+        luminance = lab[:, :, 0]
+
+        # 2. 明るい領域と暗い領域を検出
+        bright_mask = (luminance > 150).astype(np.float32)
+        dark_mask = (luminance < 100).astype(np.float32)
+
+        # 3. ガウシアンブラーで境界を滑らかに（重み付け平均）
+        bright_mask = cv2.GaussianBlur(bright_mask, (51, 51), 0)
+        dark_mask = cv2.GaussianBlur(dark_mask, (51, 51), 0)
+
+        # 4. 明るい部分用の処理（ハイライト圧縮強化）
+        lab_bright = lab.copy()
+        l_channel_bright = lab_bright[:, :, 0].astype(np.float32)
+        # 150以上を強く圧縮
+        threshold = 150.0
+        compressed = threshold + (l_channel_bright - threshold) * 0.3
+        lab_bright[:, :, 0] = np.clip(compressed, 0, 255).astype(np.uint8)
+        image_bright = cv2.cvtColor(lab_bright, cv2.COLOR_LAB2BGR)
+
+        # 5. 暗い部分用の処理（CLAHE強化）
+        lab_dark = lab.copy()
+        clahe_strong = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(4, 4))
+        lab_dark[:, :, 0] = clahe_strong.apply(lab_dark[:, :, 0])
+        image_dark = cv2.cvtColor(lab_dark, cv2.COLOR_LAB2BGR)
+
+        # 6. 中間部分（通常のCLAHE）
+        lab_mid = lab.copy()
+        clahe_mid = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(tile_size, tile_size))
+        lab_mid[:, :, 0] = clahe_mid.apply(lab_mid[:, :, 0])
+        image_mid = cv2.cvtColor(lab_mid, cv2.COLOR_LAB2BGR)
+
+        # 7. 重み付け合成
+        image_float = image_mid.astype(np.float32)
+        image_bright_f = image_bright.astype(np.float32)
+        image_dark_f = image_dark.astype(np.float32)
+
+        # 明るい部分を合成
+        result = image_float * (1 - bright_mask[:, :, np.newaxis]) + \
+                 image_bright_f * bright_mask[:, :, np.newaxis]
+
+        # 暗い部分を合成
+        result = result * (1 - dark_mask[:, :, np.newaxis]) + \
+                 image_dark_f * dark_mask[:, :, np.newaxis]
+
+        result_rgb = result.astype(np.uint8)
+
+        # 8. グレースケール（白黒）に変換
+        gray = cv2.cvtColor(result_rgb, cv2.COLOR_BGR2GRAY)
+
+        # BGR形式に戻す（表示用）
+        result_gray_bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+
+        return result_gray_bgr
 
     def on_camera_param_change(self, value):
-        """カメラパラメータ変更時のコールバック"""
+        """カメラパラメータ変更時のコールバック（UIの表示のみ更新）"""
         # ラベルを更新
         self.exposure_label.config(text=f"{self.param_exposure.get()}μs")
         self.gain_label.config(text=f"{self.param_gain.get():.1f}dB")
@@ -679,14 +1196,11 @@ class WrinkleDetectionApp:
         self.black_level_label.config(text=f"{self.param_black_level.get()}")
         self.wb_red_label.config(text=f"{self.param_wb_red.get():.2f}")
         self.wb_blue_label.config(text=f"{self.param_wb_blue.get():.2f}")
+        self.highlight_comp_label.config(text=f"{self.param_highlight_comp.get():.2f}")
+        self.saturation_label.config(text=f"{self.param_saturation.get():.2f}")
 
-        # カメラが起動中の場合は設定を適用
-        if self.is_running:
-            self.camera.set_exposure(self.param_exposure.get())
-            self.camera.set_gain(self.param_gain.get())
-            self.camera.set_digital_gain(self.param_digital_gain.get())
-            self.camera.set_black_level(self.param_black_level.get())
-            self.camera.set_white_balance(self.param_wb_red.get(), self.param_wb_blue.get())
+        # 注意：カメラには設定を適用しない（オリジナル画像は固定パラメータで取得）
+        # UIパラメータは右側のプレビュー（プリセット適用後）に反映される
 
     def on_interval_change(self, value):
         """撮影間隔変更時"""
@@ -694,26 +1208,153 @@ class WrinkleDetectionApp:
         self.capture_interval_label.config(text=f"{interval:.1f}")
 
     def set_normal_mode(self):
-        """通常モードに設定"""
+        """通常モードに設定（UIの値のみ）"""
         # スライダーの値を通常モードに変更
         self.param_exposure.set(CAMERA_SETTINGS['exposure_time'])
         self.param_gain.set(CAMERA_SETTINGS['gain'])
-
-        if self.is_running:
-            self.camera.set_exposure(self.param_exposure.get())
-            self.camera.set_gain(self.param_gain.get())
-            print(f"通常モード: 露出={self.param_exposure.get()}μs, ゲイン={self.param_gain.get()}dB")
+        print(f"通常モード（右側プレビューに適用）: 露出={self.param_exposure.get()}μs, ゲイン={self.param_gain.get()}dB")
 
     def set_fast_mode(self):
-        """ブレ防止モードに設定"""
+        """ブレ防止モードに設定（UIの値のみ）"""
         # スライダーの値をブレ防止モードに変更
         self.param_exposure.set(CAMERA_SETTINGS['exposure_time_fast'])
         self.param_gain.set(CAMERA_SETTINGS['gain_fast'])
+        print(f"ブレ防止モード（右側プレビューに適用）: 露出={self.param_exposure.get()}μs, ゲイン={self.param_gain.get()}dB")
 
-        if self.is_running:
-            self.camera.set_exposure(self.param_exposure.get())
-            self.camera.set_gain(self.param_gain.get())
-            print(f"ブレ防止モード: 露出={self.param_exposure.get()}μs, ゲイン={self.param_gain.get()}dB")
+    def load_presets(self):
+        """プリセットをファイルから読み込み"""
+        if os.path.exists(self.preset_file):
+            try:
+                with open(self.preset_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"プリセット読み込みエラー: {e}")
+
+        # デフォルトのプリセット（5つ）
+        return [
+            {'name': f'プリセット{i+1}', 'params': {}} for i in range(5)
+        ]
+
+    def save_presets_to_file(self):
+        """プリセットをファイルに保存"""
+        try:
+            with open(self.preset_file, 'w', encoding='utf-8') as f:
+                json.dump(self.presets, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            messagebox.showerror("エラー", f"プリセット保存失敗: {e}")
+
+    def get_current_params(self):
+        """現在のパラメータを取得"""
+        return {
+            'exposure': self.param_exposure.get(),
+            'gain': self.param_gain.get(),
+            'digital_gain': self.param_digital_gain.get(),
+            'black_level': self.param_black_level.get(),
+            'wb_red': self.param_wb_red.get(),
+            'wb_blue': self.param_wb_blue.get(),
+            'highlight_comp': self.param_highlight_comp.get(),
+            'saturation': self.param_saturation.get(),
+            'clahe_clip': self.clahe_clip_limit.get(),
+            'clahe_tile': self.clahe_tile_size.get()
+        }
+
+    def apply_params(self, params):
+        """パラメータを適用（UIの値のみ更新、カメラには適用しない）"""
+        self.param_exposure.set(params.get('exposure', CAMERA_SETTINGS['exposure_time']))
+        self.param_gain.set(params.get('gain', CAMERA_SETTINGS['gain']))
+        self.param_digital_gain.set(params.get('digital_gain', 1.0))
+        self.param_black_level.set(params.get('black_level', 0))
+        self.param_wb_red.set(params.get('wb_red', 1.0))
+        self.param_wb_blue.set(params.get('wb_blue', 1.0))
+        self.param_highlight_comp.set(params.get('highlight_comp', 1.0))
+        self.param_saturation.set(params.get('saturation', 1.0))
+        self.clahe_clip_limit.set(params.get('clahe_clip', DATASET_SETTINGS['clahe_clip_limit']))
+        self.clahe_tile_size.set(params.get('clahe_tile', DATASET_SETTINGS['clahe_tile_size']))
+
+        # 注意：カメラには設定を適用しない（オリジナル画像は固定パラメータで取得）
+        # UIパラメータは右側のプレビュー（プリセット適用後）に反映される
+
+    def save_preset(self, index):
+        """プリセットを保存"""
+        self.presets[index]['params'] = self.get_current_params()
+        self.save_presets_to_file()
+        messagebox.showinfo("保存完了", f"'{self.presets[index]['name']}' に現在の設定を保存しました")
+
+    def load_preset(self, index):
+        """プリセットを読み込み"""
+        params = self.presets[index].get('params', {})
+        if not params:
+            messagebox.showwarning("警告", f"'{self.presets[index]['name']}' には設定が保存されていません")
+            return
+
+        self.apply_params(params)
+        print(f"プリセット '{self.presets[index]['name']}' を読み込みました")
+
+    def rename_preset(self, index):
+        """プリセット名を変更"""
+        current_name = self.presets[index]['name']
+        new_name = simpledialog.askstring("プリセット名変更",
+                                         f"新しい名前を入力してください:",
+                                         initialvalue=current_name)
+        if new_name:
+            self.presets[index]['name'] = new_name
+            self.preset_labels[index].config(text=new_name)
+            self.save_presets_to_file()
+            print(f"プリセット名を '{new_name}' に変更しました")
+
+    def update_auto_preset_labels(self, *args):
+        """自動プリセット選択ドロップダウンのラベルを更新"""
+        idx1 = self.preset_range1.get()
+        idx2 = self.preset_range2.get()
+        idx3 = self.preset_range3.get()
+        idx4 = self.preset_range4.get()
+
+        name1 = self.presets[idx1].get('name', f'プリセット{idx1+1}')
+        name2 = self.presets[idx2].get('name', f'プリセット{idx2+1}')
+        name3 = self.presets[idx3].get('name', f'プリセット{idx3+1}')
+        name4 = self.presets[idx4].get('name', f'プリセット{idx4+1}')
+
+        self.preset_range1_label.config(text=name1)
+        self.preset_range2_label.config(text=name2)
+        self.preset_range3_label.config(text=name3)
+        self.preset_range4_label.config(text=name4)
+
+    def load_auto_preset_config(self):
+        """自動プリセット設定を読み込み"""
+        if os.path.exists(self.auto_preset_config_file):
+            try:
+                with open(self.auto_preset_config_file, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                    self.threshold1.set(config.get('threshold1', 60))
+                    self.threshold2.set(config.get('threshold2', 100))
+                    self.threshold3.set(config.get('threshold3', 140))
+                    self.preset_range1.set(config.get('preset_range1', 0))
+                    self.preset_range2.set(config.get('preset_range2', 1))
+                    self.preset_range3.set(config.get('preset_range3', 2))
+                    self.preset_range4.set(config.get('preset_range4', 3))
+                    self.luminance_hysteresis.set(config.get('hysteresis', 10))
+                    print(f"自動プリセット設定を読み込みました")
+            except Exception as e:
+                print(f"自動プリセット設定読み込みエラー: {e}")
+
+    def save_auto_preset_config(self):
+        """自動プリセット設定を保存"""
+        try:
+            config = {
+                'threshold1': self.threshold1.get(),
+                'threshold2': self.threshold2.get(),
+                'threshold3': self.threshold3.get(),
+                'preset_range1': self.preset_range1.get(),
+                'preset_range2': self.preset_range2.get(),
+                'preset_range3': self.preset_range3.get(),
+                'preset_range4': self.preset_range4.get(),
+                'hysteresis': self.luminance_hysteresis.get()
+            }
+            with open(self.auto_preset_config_file, 'w', encoding='utf-8') as f:
+                json.dump(config, f, ensure_ascii=False, indent=2)
+            messagebox.showinfo("保存完了", "自動プリセット設定を保存しました")
+        except Exception as e:
+            messagebox.showerror("エラー", f"設定保存失敗: {e}")
 
     def start_auto_capture(self):
         """自動撮影を開始"""

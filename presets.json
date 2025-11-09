@@ -1,0 +1,66 @@
+[
+  {
+    "name": "黒・紫",
+    "params": {
+      "exposure": 20000,
+      "gain": 24.0,
+      "digital_gain": 1.0,
+      "black_level": 0,
+      "wb_red": 1.0147058823529411,
+      "wb_blue": 0.9889705882352942,
+      "highlight_comp": 1.0,
+      "saturation": 0.0,
+      "clahe_clip": 4.0,
+      "clahe_tile": 16
+    }
+  },
+  {
+    "name": "白・黄色",
+    "params": {
+      "exposure": 2397,
+      "gain": 24.0,
+      "digital_gain": 1.0,
+      "black_level": 0,
+      "wb_red": 1.0147058823529411,
+      "wb_blue": 1.0147058823529411,
+      "highlight_comp": 1.0,
+      "saturation": 0.0,
+      "clahe_clip": 4.0,
+      "clahe_tile": 16
+    }
+  },
+  {
+    "name": "赤",
+    "params": {
+      "exposure": 2529,
+      "gain": 10.235294117647058,
+      "digital_gain": 1.0,
+      "black_level": 0,
+      "wb_red": 1.0147058823529411,
+      "wb_blue": 0.9632352941176471,
+      "highlight_comp": 1.0,
+      "saturation": 0.0,
+      "clahe_clip": 4.0,
+      "clahe_tile": 8
+    }
+  },
+  {
+    "name": "青・緑",
+    "params": {
+      "exposure": 3985,
+      "gain": 24.0,
+      "digital_gain": 1.0,
+      "black_level": 0,
+      "wb_red": 1.0147058823529411,
+      "wb_blue": 0.9632352941176471,
+      "highlight_comp": 1.0,
+      "saturation": 0.0,
+      "clahe_clip": 4.0,
+      "clahe_tile": 12
+    }
+  },
+  {
+    "name": "プリセット5",
+    "params": {}
+  }
+]

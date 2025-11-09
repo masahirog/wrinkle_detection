@@ -1,0 +1,10 @@
+{
+  "threshold1": 20,
+  "threshold2": 44,
+  "threshold3": 62,
+  "preset_range1": 0,
+  "preset_range2": 3,
+  "preset_range3": 2,
+  "preset_range4": 1,
+  "hysteresis": 5
+}
