@@ -496,17 +496,29 @@ class PhotometricStereoApp:
             # 撮影画像も縦長
             for canvas in self.captured_canvases:
                 canvas.config(width=125, height=200)
+            # 法線マップ・アルベドも縦長
+            self.normal_canvas.config(width=112, height=180)
+            self.albedo_canvas.config(width=112, height=180)
         else:
             # 横長
             self.preview_canvas.config(width=640, height=400)
             # 撮影画像も横長
             for canvas in self.captured_canvases:
                 canvas.config(width=200, height=125)
+            # 法線マップ・アルベドも横長
+            self.normal_canvas.config(width=180, height=112)
+            self.albedo_canvas.config(width=180, height=112)
 
         # 既存の撮影画像を再表示
         for i in range(3):
             if self.captured_images[i] is not None:
                 self._update_captured_display(i)
+
+        # 既存の結果画像を再表示
+        if self.normal_map is not None:
+            self._display_result(self.normal_map, self.normal_canvas)
+        if self.albedo_map is not None:
+            self._display_result(cv2.cvtColor(self.albedo_map, cv2.COLOR_GRAY2RGB), self.albedo_canvas)
 
         logger.info(f"回転設定: {self.rotation}°")
 
@@ -741,7 +753,12 @@ class PhotometricStereoApp:
 
     def _display_result(self, image, canvas):
         """結果画像をキャンバスに表示"""
-        display = cv2.resize(image, (180, 112))
+        # 回転に応じてリサイズ
+        if self.rotation in [90, 270]:
+            display = cv2.resize(image, (112, 180))
+        else:
+            display = cv2.resize(image, (180, 112))
+
         if len(display.shape) == 2:
             display = cv2.cvtColor(display, cv2.COLOR_GRAY2RGB)
 
