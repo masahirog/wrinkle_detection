@@ -464,6 +464,15 @@ class PhotometricStereoApp:
         self.rotation = int(self.rotation_var.get())
         if self.camera_opened:
             self.camera.set_rotation(self.rotation)
+
+        # キャンバスサイズを回転に応じて変更
+        if self.rotation in [90, 270]:
+            # 縦長
+            self.preview_canvas.config(width=400, height=640)
+        else:
+            # 横長
+            self.preview_canvas.config(width=640, height=400)
+
         logger.info(f"回転設定: {self.rotation}°")
 
     def _on_exposure_change(self, value):
@@ -489,8 +498,11 @@ class PhotometricStereoApp:
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 display = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
 
-                # リサイズ
-                display = cv2.resize(display, (640, 400))
+                # 回転に応じてリサイズ
+                if self.rotation in [90, 270]:
+                    display = cv2.resize(display, (400, 640))
+                else:
+                    display = cv2.resize(display, (640, 400))
 
                 # Tkinter用に変換
                 image = Image.fromarray(display)
