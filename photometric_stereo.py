@@ -290,9 +290,33 @@ class PhotometricStereoApp:
 
     def _setup_gui(self):
         """GUIレイアウト構築"""
-        # メインフレーム
-        main_frame = ttk.Frame(self.root, padding="10")
-        main_frame.pack(fill=tk.BOTH, expand=True)
+        # スクロール可能なキャンバス
+        self.main_canvas = tk.Canvas(self.root)
+        scrollbar_y = ttk.Scrollbar(self.root, orient=tk.VERTICAL, command=self.main_canvas.yview)
+        scrollbar_x = ttk.Scrollbar(self.root, orient=tk.HORIZONTAL, command=self.main_canvas.xview)
+
+        self.scrollable_frame = ttk.Frame(self.main_canvas, padding="10")
+
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.main_canvas.configure(scrollregion=self.main_canvas.bbox("all"))
+        )
+
+        self.main_canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        self.main_canvas.configure(yscrollcommand=scrollbar_y.set, xscrollcommand=scrollbar_x.set)
+
+        # マウスホイールでスクロール
+        def _on_mousewheel(event):
+            self.main_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        self.main_canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        # レイアウト
+        scrollbar_y.pack(side=tk.RIGHT, fill=tk.Y)
+        scrollbar_x.pack(side=tk.BOTTOM, fill=tk.X)
+        self.main_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # メインフレーム（スクロール可能フレーム内）
+        main_frame = self.scrollable_frame
 
         # 左側: プレビューと撮影画像
         left_frame = ttk.Frame(main_frame)
@@ -469,9 +493,20 @@ class PhotometricStereoApp:
         if self.rotation in [90, 270]:
             # 縦長
             self.preview_canvas.config(width=400, height=640)
+            # 撮影画像も縦長
+            for canvas in self.captured_canvases:
+                canvas.config(width=125, height=200)
         else:
             # 横長
             self.preview_canvas.config(width=640, height=400)
+            # 撮影画像も横長
+            for canvas in self.captured_canvases:
+                canvas.config(width=200, height=125)
+
+        # 既存の撮影画像を再表示
+        for i in range(3):
+            if self.captured_images[i] is not None:
+                self._update_captured_display(i)
 
         logger.info(f"回転設定: {self.rotation}°")
 
@@ -564,7 +599,13 @@ class PhotometricStereoApp:
             img = self.captured_images[index]
             # 正規化して表示
             display = (img / img.max() * 255).astype(np.uint8)
-            display = cv2.resize(display, (200, 125))
+
+            # 回転に応じてリサイズ
+            if self.rotation in [90, 270]:
+                display = cv2.resize(display, (125, 200))
+            else:
+                display = cv2.resize(display, (200, 125))
+
             display = cv2.cvtColor(display, cv2.COLOR_GRAY2RGB)
 
             image = Image.fromarray(display)
