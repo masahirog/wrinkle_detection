@@ -10,6 +10,9 @@
 2. LED2を点灯して「LED2撮影」ボタンを押す
 3. LED3を点灯して「LED3撮影」ボタンを押す
 4. 「法線マップ計算」ボタンを押す
+
+光源キャリブレーション:
+- 光沢のある球（パチンコ玉など）を使って光源方向を自動推定
 """
 
 import tkinter as tk
@@ -29,6 +32,219 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+class LightCalibrationWindow:
+    """光源キャリブレーション用ウィンドウ"""
+
+    def __init__(self, parent, image, led_index, callback):
+        """
+        Args:
+            parent: 親ウィンドウ
+            image: キャリブレーション用画像（グレースケール）
+            led_index: LED番号（0, 1, 2）
+            callback: キャリブレーション完了時のコールバック (azimuth, elevation)
+        """
+        self.window = tk.Toplevel(parent)
+        self.window.title(f"光源キャリブレーション - LED{led_index + 1}")
+        self.window.geometry("900x700")
+
+        self.image = image
+        self.led_index = led_index
+        self.callback = callback
+
+        # 球の中心と半径
+        self.sphere_center = None
+        self.sphere_radius = None
+
+        # マウス操作用
+        self.drag_start = None
+        self.temp_circle = None
+
+        # 検出結果
+        self.highlight_pos = None
+        self.light_vector = None
+
+        self._setup_gui()
+
+    def _setup_gui(self):
+        """GUI構築"""
+        # 説明
+        info_frame = ttk.Frame(self.window, padding="10")
+        info_frame.pack(fill=tk.X)
+
+        ttk.Label(info_frame, text="操作方法:").pack(anchor=tk.W)
+        ttk.Label(info_frame, text="1. 球の中心をクリックし、ドラッグして球の輪郭まで引く").pack(anchor=tk.W)
+        ttk.Label(info_frame, text="2. 「ハイライト検出」で光源方向を自動計算").pack(anchor=tk.W)
+        ttk.Label(info_frame, text="3. 「適用」で設定を反映").pack(anchor=tk.W)
+
+        # 画像表示
+        canvas_frame = ttk.Frame(self.window)
+        canvas_frame.pack(fill=tk.BOTH, expand=True, padx=10)
+
+        # 表示サイズを計算（最大800x500）
+        h, w = self.image.shape
+        scale = min(800 / w, 500 / h, 1.0)
+        self.display_w = int(w * scale)
+        self.display_h = int(h * scale)
+        self.scale = scale
+
+        self.canvas = tk.Canvas(canvas_frame, width=self.display_w, height=self.display_h, bg='black')
+        self.canvas.pack()
+
+        # 画像を表示
+        display_img = cv2.resize(self.image, (self.display_w, self.display_h))
+        display_rgb = cv2.cvtColor(display_img.astype(np.uint8), cv2.COLOR_GRAY2RGB)
+        self.photo = ImageTk.PhotoImage(Image.fromarray(display_rgb))
+        self.canvas.create_image(0, 0, anchor=tk.NW, image=self.photo)
+
+        # マウスイベント
+        self.canvas.bind("<ButtonPress-1>", self._on_mouse_down)
+        self.canvas.bind("<B1-Motion>", self._on_mouse_drag)
+        self.canvas.bind("<ButtonRelease-1>", self._on_mouse_up)
+
+        # 結果表示
+        result_frame = ttk.LabelFrame(self.window, text="検出結果", padding="10")
+        result_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        self.result_label = ttk.Label(result_frame, text="球を指定してください")
+        self.result_label.pack()
+
+        # ボタン
+        btn_frame = ttk.Frame(self.window, padding="10")
+        btn_frame.pack(fill=tk.X)
+
+        ttk.Button(btn_frame, text="ハイライト検出", command=self._detect_highlight).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="適用", command=self._apply).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="キャンセル", command=self.window.destroy).pack(side=tk.LEFT, padx=5)
+
+    def _on_mouse_down(self, event):
+        """マウスダウン"""
+        self.drag_start = (event.x, event.y)
+        if self.temp_circle:
+            self.canvas.delete(self.temp_circle)
+            self.temp_circle = None
+
+    def _on_mouse_drag(self, event):
+        """マウスドラッグ"""
+        if self.drag_start:
+            if self.temp_circle:
+                self.canvas.delete(self.temp_circle)
+
+            cx, cy = self.drag_start
+            r = np.sqrt((event.x - cx)**2 + (event.y - cy)**2)
+
+            self.temp_circle = self.canvas.create_oval(
+                cx - r, cy - r, cx + r, cy + r,
+                outline='green', width=2
+            )
+
+    def _on_mouse_up(self, event):
+        """マウスアップ"""
+        if self.drag_start:
+            cx, cy = self.drag_start
+            r = np.sqrt((event.x - cx)**2 + (event.y - cy)**2)
+
+            if r > 10:  # 最小半径
+                # 表示座標から元画像座標に変換
+                self.sphere_center = (int(cx / self.scale), int(cy / self.scale))
+                self.sphere_radius = int(r / self.scale)
+
+                self.result_label.config(
+                    text=f"球: 中心=({self.sphere_center[0]}, {self.sphere_center[1]}), 半径={self.sphere_radius}px"
+                )
+
+            self.drag_start = None
+
+    def _detect_highlight(self):
+        """ハイライト検出"""
+        if self.sphere_center is None or self.sphere_radius is None:
+            messagebox.showerror("エラー", "先に球を指定してください")
+            return
+
+        cx, cy = self.sphere_center
+        r = self.sphere_radius
+
+        # 球の領域をマスク
+        mask = np.zeros(self.image.shape, dtype=np.uint8)
+        cv2.circle(mask, (cx, cy), r, 255, -1)
+
+        # マスク内で最も明るい点を検出
+        masked_img = self.image.copy()
+        masked_img[mask == 0] = 0
+
+        # ガウシアンブラーでノイズ除去
+        blurred = cv2.GaussianBlur(masked_img, (5, 5), 0)
+
+        # 最大輝度の位置を取得
+        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(blurred, mask=mask)
+        self.highlight_pos = max_loc  # (x, y)
+
+        # 光源方向ベクトルを計算
+        hx, hy = self.highlight_pos
+
+        # 正規化座標（球の中心を原点、半径を1とする）
+        nx = (hx - cx) / r
+        ny = (hy - cy) / r
+
+        # 球面上のZ座標
+        nz_sq = 1 - nx**2 - ny**2
+        if nz_sq < 0:
+            nz_sq = 0
+        nz = np.sqrt(nz_sq)
+
+        # 鏡面反射を考慮した光源方向
+        # 視線方向 V = (0, 0, 1)
+        # 法線 N = (nx, ny, nz)
+        # 光源方向 L = 2 * (N・V) * N - V = 2*nz*N - V
+        # L = (2*nz*nx, 2*nz*ny, 2*nz*nz - 1)
+        lx = 2 * nz * nx
+        ly = 2 * nz * ny
+        lz = 2 * nz * nz - 1
+
+        # 正規化
+        length = np.sqrt(lx**2 + ly**2 + lz**2)
+        if length > 0:
+            lx, ly, lz = lx/length, ly/length, lz/length
+
+        self.light_vector = (lx, ly, lz)
+
+        # 方位角と仰角に変換
+        azimuth = np.degrees(np.arctan2(ly, lx))
+        elevation = np.degrees(np.arcsin(lz))
+
+        # 結果表示
+        self.result_label.config(
+            text=f"ハイライト位置: ({hx}, {hy})\n"
+                 f"光源ベクトル: ({lx:.3f}, {ly:.3f}, {lz:.3f})\n"
+                 f"方位角: {azimuth:.1f}°, 仰角: {elevation:.1f}°"
+        )
+
+        # ハイライト位置を表示
+        hx_disp = int(hx * self.scale)
+        hy_disp = int(hy * self.scale)
+        self.canvas.create_oval(
+            hx_disp - 5, hy_disp - 5, hx_disp + 5, hy_disp + 5,
+            fill='red', outline='yellow', width=2
+        )
+
+        logger.info(f"LED{self.led_index + 1} 光源方向: azimuth={azimuth:.1f}°, elevation={elevation:.1f}°")
+
+    def _apply(self):
+        """適用"""
+        if self.light_vector is None:
+            messagebox.showerror("エラー", "先にハイライト検出を行ってください")
+            return
+
+        lx, ly, lz = self.light_vector
+
+        # 方位角と仰角に変換
+        azimuth = np.degrees(np.arctan2(ly, lx))
+        elevation = np.degrees(np.arcsin(lz))
+
+        # コールバック呼び出し
+        self.callback(azimuth, elevation)
+        self.window.destroy()
+
+
 class PhotometricStereoApp:
     """フォトメトリックステレオGUIアプリケーション"""
 
@@ -40,6 +256,9 @@ class PhotometricStereoApp:
         # カメラ制御
         self.camera = StCameraControl()
         self.camera_opened = False
+
+        # カメラ回転
+        self.rotation = 0
 
         # 撮影画像（3枚）
         self.captured_images = [None, None, None]
@@ -109,6 +328,17 @@ class PhotometricStereoApp:
         camera_frame = ttk.LabelFrame(right_frame, text="カメラ設定", padding="10")
         camera_frame.pack(fill=tk.X, pady=5)
 
+        # 回転設定
+        rotation_frame = ttk.Frame(camera_frame)
+        rotation_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(rotation_frame, text="回転:").pack(side=tk.LEFT)
+        self.rotation_var = tk.StringVar(value="0")
+        rotation_combo = ttk.Combobox(rotation_frame, textvariable=self.rotation_var,
+                                       values=["0", "90", "180", "270"], width=5, state="readonly")
+        rotation_combo.pack(side=tk.LEFT, padx=5)
+        rotation_combo.bind("<<ComboboxSelected>>", self._on_rotation_change)
+        ttk.Label(rotation_frame, text="°").pack(side=tk.LEFT)
+
         # 露出
         ttk.Label(camera_frame, text="露出時間 (us):").pack(anchor=tk.W)
         self.exposure_var = tk.IntVar(value=CAMERA_SETTINGS['exposure_time'])
@@ -142,19 +372,33 @@ class PhotometricStereoApp:
 
             # 方位角
             ttk.Label(led_frame, text="方位角:").pack(side=tk.LEFT)
-            az_var = tk.IntVar(value=self.light_params[i]['azimuth'])
-            az_entry = ttk.Entry(led_frame, textvariable=az_var, width=5)
+            az_var = tk.DoubleVar(value=self.light_params[i]['azimuth'])
+            az_entry = ttk.Entry(led_frame, textvariable=az_var, width=6)
             az_entry.pack(side=tk.LEFT)
             ttk.Label(led_frame, text="°").pack(side=tk.LEFT)
 
             # 仰角
             ttk.Label(led_frame, text=" 仰角:").pack(side=tk.LEFT)
-            el_var = tk.IntVar(value=self.light_params[i]['elevation'])
-            el_entry = ttk.Entry(led_frame, textvariable=el_var, width=5)
+            el_var = tk.DoubleVar(value=self.light_params[i]['elevation'])
+            el_entry = ttk.Entry(led_frame, textvariable=el_var, width=6)
             el_entry.pack(side=tk.LEFT)
             ttk.Label(led_frame, text="°").pack(side=tk.LEFT)
 
             self.light_vars.append({'azimuth': az_var, 'elevation': el_var})
+
+        # 光源キャリブレーションボタン
+        calib_frame = ttk.LabelFrame(right_frame, text="光源キャリブレーション（球を使用）", padding="10")
+        calib_frame.pack(fill=tk.X, pady=5)
+
+        ttk.Label(calib_frame, text="LEDを点灯して球を撮影し、光源方向を自動推定").pack(anchor=tk.W)
+
+        calib_btn_frame = ttk.Frame(calib_frame)
+        calib_btn_frame.pack(pady=5)
+
+        for i in range(3):
+            btn = ttk.Button(calib_btn_frame, text=f"LED{i+1}キャリブ",
+                           command=lambda idx=i: self._start_calibration(idx))
+            btn.pack(side=tk.LEFT, padx=3)
 
         # 撮影ボタン
         capture_frame = ttk.LabelFrame(right_frame, text="撮影", padding="10")
@@ -215,6 +459,13 @@ class PhotometricStereoApp:
             self.status_var.set("カメラ接続失敗")
             logger.error("カメラ起動失敗")
 
+    def _on_rotation_change(self, event):
+        """回転変更"""
+        self.rotation = int(self.rotation_var.get())
+        if self.camera_opened:
+            self.camera.set_rotation(self.rotation)
+        logger.info(f"回転設定: {self.rotation}°")
+
     def _on_exposure_change(self, value):
         """露出変更"""
         exposure = int(float(value))
@@ -251,6 +502,30 @@ class PhotometricStereoApp:
 
         # 次の更新をスケジュール
         self.root.after(33, self._update_preview)
+
+    def _start_calibration(self, led_index):
+        """光源キャリブレーション開始"""
+        if not self.camera_opened:
+            messagebox.showerror("エラー", "カメラが接続されていません")
+            return
+
+        # 現在のフレームを取得
+        frame = self.camera.capture_frame()
+        if frame is None:
+            messagebox.showerror("エラー", "画像の取得に失敗しました")
+            return
+
+        # グレースケールに変換
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float32)
+
+        # コールバック
+        def on_calibration_complete(azimuth, elevation):
+            self.light_vars[led_index]['azimuth'].set(round(azimuth, 1))
+            self.light_vars[led_index]['elevation'].set(round(elevation, 1))
+            self.status_var.set(f"LED{led_index + 1} キャリブレーション完了: 方位角={azimuth:.1f}°, 仰角={elevation:.1f}°")
+
+        # キャリブレーションウィンドウを開く
+        LightCalibrationWindow(self.root, gray, led_index, on_calibration_complete)
 
     def _capture_image(self, led_index):
         """画像撮影"""
@@ -456,6 +731,7 @@ class PhotometricStereoApp:
                 f.write(f"LED{i+1}: 方位角={az}°, 仰角={el}°\n")
             f.write(f"\n露出: {self.exposure_var.get()} us\n")
             f.write(f"ゲイン: {self.gain_var.get():.1f} dB\n")
+            f.write(f"回転: {self.rotation}°\n")
 
         self.status_var.set(f"保存完了: {self.output_dir}")
         messagebox.showinfo("保存完了", f"保存先: {self.output_dir}")
