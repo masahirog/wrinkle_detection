@@ -1,0 +1,20 @@
+{
+  "light_params": [
+    {
+      "azimuth": -91.4,
+      "elevation": 31.2
+    },
+    {
+      "azimuth": -145.5,
+      "elevation": 14.2
+    },
+    {
+      "azimuth": -106.6,
+      "elevation": 54.8
+    },
+    {
+      "azimuth": -24.4,
+      "elevation": 17.3
+    }
+  ]
+}
