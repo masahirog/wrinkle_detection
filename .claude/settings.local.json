@@ -9,7 +9,9 @@
       "WebFetch(domain:www.frontier.maxell.co.jp)",
       "WebFetch(domain:www.codevace.com)",
       "WebFetch(domain:qiita.com)",
-      "WebFetch(domain:labs.eecs.tottori-u.ac.jp)"
+      "WebFetch(domain:labs.eecs.tottori-u.ac.jp)",
+      "Bash(git checkout:*)",
+      "Bash(git commit:*)"
     ],
     "deny": [],
     "ask": []
